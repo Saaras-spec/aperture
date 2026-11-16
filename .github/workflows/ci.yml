@@ -37,6 +37,44 @@ jobs:
       - name: Run unit tests with pytest coverage
         run: pytest --cov=src/aperture --cov-report=term-missing tests/unit
 
+  integration:
+    name: PostgreSQL Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: aperture_user
+          POSTGRES_PASSWORD: aperture_password
+          POSTGRES_DB: aperture_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install package and dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install .[dev]
+
+      - name: Run integration tests
+        env:
+          POSTGRES_TEST_URL: postgresql://aperture_user:aperture_password@localhost:5432/aperture_test
+        run: pytest -m integration tests/integration
+
   docker:
     name: Docker Build & Verification
     runs-on: ubuntu-latest
