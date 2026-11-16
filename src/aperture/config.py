@@ -50,8 +50,27 @@ class Config(BaseModel):
     )
     large_tables: list[str] = Field(default_factory=list)
     rules: dict[str, RuleConfig] = Field(default_factory=dict)
+    explain_provider: str | None = None
+    explain_model: str | None = None
+    explain_max_findings: int = 10
+    explain_timeout_seconds: float = 10.0
 
     model_config = {"extra": "forbid"}
+
+    @field_validator("explain_provider", mode="before")
+    @classmethod
+    def validate_explain_provider(cls, v: Any) -> Any:
+        """Validate explain_provider string against supported providers."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.strip().lower()
+            if v_lower not in {"anthropic", "gemini"}:
+                raise ValueError(
+                    f"Invalid explain_provider '{v}'. Must be one of: 'anthropic', 'gemini'"
+                )
+            return v_lower
+        return v
 
     @field_validator("fail_on", mode="before")
     @classmethod

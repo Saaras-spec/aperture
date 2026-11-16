@@ -57,6 +57,7 @@ class Finding:
     statement_sql: str
     suppressed: bool = False
     suppression_reason: str | None = None
+    explanation: str | None = None
 
 
 @dataclass
