@@ -770,3 +770,126 @@ Testing both positive and negative cases guarantees the action fails when risky 
 
 
 
+
+
+---
+
+## Phase 6: End-to-End Demo, Live PostgreSQL Integration Tests & PyPI Packaging
+
+### 1. Files Created and Updated
+
+- **`demo/`**: A self-contained sample repository demonstrating Aperture in action:
+  - `demo/db/migrations/001_safe.sql`: Safe migration with `CONCURRENTLY`, `SET lock_timeout`, and non-blocking `ADD COLUMN ... DEFAULT`.
+  - `demo/db/migrations/002_unsafe.sql`: Dangerous migration triggering `MG001` (`DROP COLUMN`) and `MG005` (`CREATE INDEX` without `CONCURRENTLY`).
+  - `demo/aperture.yml`: Project configuration setting `fail_on: ERROR` and targeting `db/migrations/*.sql`.
+  - `demo/.github/workflows/aperture.yml`: Production GitHub Action workflow running on PRs to post diagnostic comments.
+  - `demo/README.md`: Step-by-step tutorial explaining how to simulate blocked pull requests.
+- **`docker-compose.yml`**: Compose configuration providing a reproducible PostgreSQL 16 container with healthchecks for integration testing.
+- **`tests/integration/conftest.py`**: Integration fixtures that discover the PostgreSQL connection URL, perform a healthcheck, and cleanly skip tests if live PostgreSQL is unavailable.
+- **`tests/integration/test_postgres_behaviour.py`**: Live database test suite marked `@pytest.mark.integration` proving rules `MG003`, `MG004`, `MG005`, and `MG006` match actual PostgreSQL locking and failure behavior.
+- **`.github/workflows/ci.yml`**: Added a dedicated `integration` workflow job using a GitHub Actions PostgreSQL 16 service container.
+- **`pyproject.toml`**: Configured `addopts = "-v --strict-markers -m 'not integration'"` to exclude integration tests from default test runs; added `psycopg[binary]` and `build` to dev dependencies.
+- **`README.md`**: Added CI, coverage, Python version, and license badges, an example CLI console output block, and a "Try the Demo" guide.
+- **`dist/`**: Built release artifacts `aperture_db-0.1.0.tar.gz` (sdist) and `aperture_db-0.1.0-py3-none-any.whl` (wheel) using `python -m build`.
+
+---
+
+### 2. How Data Flows
+
+```
+Developer / CI
+      │
+      ├──> pytest (default) ─────────> tests/unit/ (154 tests, runs in < 2.5s offline)
+      │
+      ├──> pytest -m integration ────> tests/integration/ (Live PostgreSQL 16)
+      │                                       │
+      │                                       ├──> Connects via psycopg
+      │                                       ├──> Simulates concurrent transactions & locks
+      │                                       └──> Asserts NotNullViolation & LockNotAvailable
+      │
+      └──> python -m build ──────────> PEP 517 build frontend ──> sdist & wheel in dist/
+```
+
+1. **Unit Testing Flow:** Running `pytest` automatically filters out integration tests (`-m 'not integration'`), guaranteeing lightning-fast feedback (< 2.5 seconds) during local development without requiring external database dependencies.
+2. **Integration Flow:** Running `pytest -m integration` connects to a PostgreSQL instance specified by `POSTGRES_TEST_URL`. Sessions create test tables, apply locks, execute DDL statements, and assert that PostgreSQL raises the exact operational errors (e.g., `NotNullViolation`, `LockNotAvailable`) that Aperture's rules are designed to prevent.
+3. **Packaging Flow:** `python -m build` reads metadata and entry points from `pyproject.toml`, builds the source distribution (`.tar.gz`) and platform-independent binary wheel (`.whl`), and outputs them to `dist/`.
+
+---
+
+### 3. Key Python Concepts Used
+
+#### Concept 1: Custom Pytest Markers & Test Filtering (`@pytest.mark`)
+Pytest allows tagging tests with custom markers to categorize suites (e.g., unit vs. integration vs. performance). By configuring `addopts` in `pyproject.toml`, we can establish default filtering rules.
+
+```python
+import pytest
+
+# Tag all tests in this module with the 'integration' marker
+pytestmark = pytest.mark.integration
+
+
+def test_real_database():
+    # Only runs when invoked with: pytest -m integration
+    assert True
+```
+
+#### Concept 2: Live Database Concurrency & Lock Testing (`psycopg`)
+Testing relational database locks requires managing multiple simultaneous database connections (`session1` and `session2`) across independent transactions to prove locking conflicts.
+
+```python
+import psycopg
+
+with (
+    psycopg.connect("postgresql://user:pass@localhost:5432/db") as s1,
+    psycopg.connect("postgresql://user:pass@localhost:5432/db") as s2,
+):
+    s1.execute("BEGIN; LOCK TABLE users IN SHARE MODE;")
+    # s2 will be blocked if it attempts an operation conflicting with SHARE MODE
+```
+
+#### Concept 3: Dynamic Test Skipping (`pytest.skip`)
+When a test depends on an external service (like a database or Docker daemon) that might not be running in every local development environment, `pytest.skip()` dynamically skips the test with a descriptive reason rather than failing.
+
+```python
+import pytest
+
+
+def check_service_available() -> bool:
+    return False
+
+
+@pytest.fixture
+def db():
+    if not check_service_available():
+        pytest.skip("External service is not reachable on this machine.")
+```
+
+#### Concept 4: Modern PEP 517 Packaging (`python -m build`)
+Python packaging uses `pyproject.toml` (PEP 518/621) as the universal build specification. The `build` tool is the modern standard frontend that invokes the underlying build backend (e.g., `setuptools.build_meta`) to produce standardized distributions.
+
+```python
+# To inspect build metadata programmatically
+from importlib.metadata import version
+
+pkg_version = version("aperture-db")
+print(f"Installed aperture-db version: {pkg_version}")
+```
+
+---
+
+### 4. Design Decisions & Interview Questions
+
+#### Q1: Why separate unit tests and integration tests with pytest markers instead of running all tests together?
+**Answer:** Speed and developer ergonomics. Unit tests execute entirely in-memory and parse ASTs in ~2 seconds, allowing developers to run `pytest` continuously on every save. Integration tests require spinning up a live PostgreSQL container, acquiring network sockets, establishing TCP connections, and simulating lock timeouts. By tagging integration tests with `@pytest.mark.integration` and excluding them from default runs via `addopts = "-m 'not integration'"`, developers get sub-second local test feedback while CI runs both suites independently.
+
+#### Q2: Why test lock contention with `LOCK TABLE ... IN SHARE MODE` and `lock_timeout` rather than spawning background processes?
+**Answer:** Determinism and execution speed. Simulating an actual index build on a massive table in CI requires generating millions of synthetic rows and waiting seconds or minutes for a background thread to build the index. In PostgreSQL's internal lock manager, `CREATE INDEX` acquires a `SHARE` lock on the relation. By acquiring `SHARE` mode explicitly in Session 1 and configuring a short `lock_timeout = '300ms'` in Session 2, we deterministically test PostgreSQL's lock compatibility matrix in milliseconds without flakiness or resource-intensive data generation.
+
+#### Q3: Why does `CREATE INDEX CONCURRENTLY` require `autocommit=True` and cannot run inside an explicit transaction block?
+**Answer:** `CREATE INDEX CONCURRENTLY` works by performing multiple sequential passes over the table: first registering the index in system catalogs, waiting for all existing write transactions to terminate, scanning the table to build the index, and performing a second validation scan. Because it must commit catalog changes and wait for other transactions to end across distinct transaction snapshots, PostgreSQL strictly prohibits `CONCURRENTLY` from running inside an explicit `BEGIN ... COMMIT` block (`ERROR: 25001: CREATE INDEX CONCURRENTLY cannot run inside a transaction block`).
+
+#### Q4: Why provide a `/demo` folder with both safe and unsafe migrations inside the same repository?
+**Answer:** Developer adoption and onboarding. A tool that flags risky migrations is only as effective as the developer's ability to understand what "good" and "bad" migrations look like in practice. The `/demo` folder provides a turnkey, copy-pasteable reference project containing real migration files, an `aperture.yml` configuration, and a GitHub Action workflow. Engineers evaluating the tool can test commands directly (`aperture check demo/db/migrations/001_safe.sql`) and see immediate results before configuring their own repositories.
+
+#### Q5: Why build PyPI packages with `python -m build` (PEP 517) instead of legacy `python setup.py sdist bdist_wheel`?
+**Answer:** `python setup.py` is deprecated by the Python Packaging Authority (PyPA). Directly executing `setup.py` runs arbitrary code in the developer's shell environment and tightly couples packaging to `setuptools`. PEP 517 and PEP 518 decouple build frontends (like `build` or `pip`) from build backends (like `setuptools`, `flit`, or `hatchling`). Using `python -m build` standardizes the build process, respects declarative `pyproject.toml` configuration, and produces standard source archives and wheels compatible with all modern Python tooling.

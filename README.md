@@ -1,8 +1,50 @@
 # 🛡️ Aperture
 
+[![CI](https://github.com/Saaras-spec/aperture/actions/workflows/ci.yml/badge.svg)](https://github.com/Saaras-spec/aperture/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/coverage-95%25-brightgreen)](https://github.com/Saaras-spec/aperture)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 **Aperture** is an open-source CLI and GitHub Action that scans PostgreSQL migration files in pull requests, detects risky operations (table locks, full scans, table rewrites, data loss), and reports actionable safe alternatives before migrations reach production.
 
 Powered by PostgreSQL's actual parser (`pglast`), Aperture provides zero false positives on PostgreSQL grammar without relying on brittle regular expressions.
+
+```text
+$ aperture check migrations/002_unsafe.sql
+
+migrations/002_unsafe.sql
+  line 4: [ERROR] MG005: Creating index 'idx_users_email' on table 'users' without CONCURRENTLY blocks all write operations until index creation completes.
+     SQL: CREATE INDEX idx_users_email ON users(email)
+     💡 Add the CONCURRENTLY keyword:
+     💡 CREATE INDEX CONCURRENTLY idx_users_email ON ...;
+     💡 Note: CONCURRENTLY cannot run inside a transaction block.
+
+  line 7: [ERROR] MG001: Dropping column 'phone' from table 'users' causes irreversible data loss.
+     SQL: ALTER TABLE users DROP COLUMN phone
+     💡 Remove all references to 'phone' in application code first. Deploy and monitor, then drop the column in a subsequent release.
+
+Summary: Found 2 error(s), 0 warning(s) across 1 file(s).
+Result: FAILED (violations at or above ERROR)
+```
+
+---
+
+## 🚀 Try the Demo
+
+A complete sample project is provided in [`demo/`](demo/):
+
+```bash
+# 1. Scan safe migration (passes with 0 findings, exit code 0)
+aperture check demo/db/migrations/001_safe.sql
+
+# 2. Scan unsafe migration (blocks dangerous DROP COLUMN and non-concurrent index, exit code 1)
+aperture check demo/db/migrations/002_unsafe.sql
+
+# 3. View the rich Markdown PR comment report Aperture produces
+aperture check demo/db/migrations/002_unsafe.sql --format markdown
+```
+
+Check out [`demo/README.md`](demo/README.md) to learn how to set up Aperture in your repository and simulate blocked pull requests.
 
 ---
 
