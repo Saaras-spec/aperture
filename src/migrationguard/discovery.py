@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import glob
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
 from migrationguard.config import Config
@@ -18,7 +19,7 @@ def _is_sql_file(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() == ".sql"
 
 
-def discover_from_paths(paths: list[str | Path]) -> list[Path]:
+def discover_from_paths(paths: Sequence[str | Path]) -> list[Path]:
     """Find migration files from explicit file or directory paths.
 
     Args:
@@ -130,7 +131,7 @@ def discover_from_git_diff(
 
 
 def discover_files(
-    paths: list[str | Path] | None = None,
+    paths: Sequence[str | Path] | None = None,
     config: Config | None = None,
     base_ref: str | None = None,
     head_ref: str = "HEAD",

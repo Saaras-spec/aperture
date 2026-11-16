@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from migrationguard.config import Config
@@ -78,7 +79,7 @@ def check_file(file_path: str | Path, config: Config) -> list[Finding]:
     return check_statements(statements, config=config, file_path=str(path))
 
 
-def check_files(file_paths: list[str | Path], config: Config) -> list[Finding]:
+def check_files(file_paths: Sequence[str | Path], config: Config) -> list[Finding]:
     """Check multiple migration files and aggregate findings."""
     all_findings: list[Finding] = []
     for file_path in file_paths:
