@@ -1,6 +1,6 @@
-# MigrationGuard Learning Log
+# Aperture Learning Log
 
-Welcome to the MigrationGuard learning companion! This document explains the codebase step-by-step across all development phases.
+Welcome to the Aperture learning companion! This document explains the codebase step-by-step across all development phases.
 
 ---
 
@@ -9,25 +9,25 @@ Welcome to the MigrationGuard learning companion! This document explains the cod
 ### 1. Files Created and What Each Does
 
 - **`pyproject.toml`**: The modern configuration file for packaging Python projects. It defines package metadata, dependencies (`pglast`, `typer`, `pydantic`, `pyyaml`), dev dependencies (`pytest`, `ruff`, `mypy`), entry points, and linter/type-checker settings.
-- **`src/migrationguard/models.py`**: The domain data structures of MigrationGuard.
+- **`src/aperture/models.py`**: The domain data structures of Aperture.
   - `Severity`: An enumeration (`INFO`, `WARNING`, `ERROR`) with custom ordering so `INFO < WARNING < ERROR`.
   - `Finding`: A dataclass representing an issue found by a rule (rule ID, severity, message, suggestion, file, line, SQL snippet, suppression status).
   - `ParsedStatement`: Represents an individual SQL statement parsed by Postgres, storing its AST node, raw SQL text, 1-indexed start line, character offset, and associated comments.
   - `StatementContext`: Metadata provided to rules during inspection (file path, index, all sibling statements, large tables).
-- **`src/migrationguard/parser.py`**: The bridge to PostgreSQL's native parser via `pglast`.
+- **`src/aperture/parser.py`**: The bridge to PostgreSQL's native parser via `pglast`.
   - `ParseError`: Custom exception class capturing syntax error messages along with file path and line number.
   - `parse_sql_string`: Breaks a SQL string into individual `ParsedStatement` objects with line numbers and preceding comments.
   - `parse_sql_file`: Reads a SQL file from disk and parses it.
-- **`src/migrationguard/rules/base.py`**:
+- **`src/aperture/rules/base.py`**:
   - `Rule`: The abstract base class that all migration safety rules inherit from. Defines required attributes (`id`, `name`, `default_severity`, `description`) and the abstract `check(...)` method.
   - Automatically registers any concrete subclass into a global dictionary `_RULE_REGISTRY` via Python's `__init_subclass__`.
-- **`src/migrationguard/rules/__init__.py`**:
+- **`src/aperture/rules/__init__.py`**:
   - Exposes functions `discover_rules()`, `get_rule(id)`, and `get_all_rules()` to dynamically load rule modules from disk without hardcoded imports.
 - **Skeleton Files**:
-  - `src/migrationguard/cli.py`: Typer CLI command group (`check`, `init`, `list-rules`, `explain`).
-  - `src/migrationguard/engine.py`, `config.py`, `discovery.py`, `suppression.py`: Pipeline module stubs for subsequent phases.
-  - `src/migrationguard/reporters/`: Console, Markdown, JSON, and SARIF reporter stubs.
-  - `action.yml`, `Dockerfile`, `docs/design.md`, `examples/migrationguard.yml`, `.github/workflows/ci.yml`.
+  - `src/aperture/cli.py`: Typer CLI command group (`check`, `init`, `list-rules`, `explain`).
+  - `src/aperture/engine.py`, `config.py`, `discovery.py`, `suppression.py`: Pipeline module stubs for subsequent phases.
+  - `src/aperture/reporters/`: Console, Markdown, JSON, and SARIF reporter stubs.
+  - `action.yml`, `Dockerfile`, `docs/design.md`, `examples/aperture.yml`, `.github/workflows/ci.yml`.
 - **Unit Tests**:
   - `tests/unit/test_models.py`: Tests `Severity` ordering and dataclass properties.
   - `tests/unit/test_parser.py`: Tests single, multiple, multiline, commented, empty, and invalid SQL statements, plus UTF-8 multi-byte handling.
@@ -59,7 +59,7 @@ List of [ Finding ] ──────────> Clean dataclasses consumed b
 1. **Input**: A migration SQL file is read.
 2. **Parsing**: `parser.py` calls `pglast.parse_sql(sql)`. If invalid, a `ParseError` is raised with the exact line number.
 3. **Statement Construction**: Slices and AST nodes are wrapped into `ParsedStatement` instances with accurate start lines.
-4. **Rule Discovery**: Any rule subclassing `Rule` in `migrationguard.rules` registers itself automatically in `rules/base.py` upon import.
+4. **Rule Discovery**: Any rule subclassing `Rule` in `aperture.rules` registers itself automatically in `rules/base.py` upon import.
 5. **Output**: Rules will inspect `ParsedStatement` in the next phases and emit `Finding` objects.
 
 ---
@@ -172,7 +172,7 @@ except ValueError as e:
 ### 4. Design Decisions & Interview Questions
 
 #### Q1: Why use `pglast` (Postgres's real C parser) rather than regular expressions or lightweight SQL tokenizers?
-**Answer:** SQL has a notoriously complex grammar. Regular expressions fail on basic edge cases: table or column names inside comments, string literals with semicolons (`'hello; world'`), dollar-quoted multiline strings (`$$ ... $$`), and complex nested subqueries. `pglast` exposes the exact PostgreSQL parser code compiled directly from Postgres C source code. This eliminates parsing false-positives and gives MigrationGuard the identical parse tree that the production database sees.
+**Answer:** SQL has a notoriously complex grammar. Regular expressions fail on basic edge cases: table or column names inside comments, string literals with semicolons (`'hello; world'`), dollar-quoted multiline strings (`$$ ... $$`), and complex nested subqueries. `pglast` exposes the exact PostgreSQL parser code compiled directly from Postgres C source code. This eliminates parsing false-positives and gives Aperture the identical parse tree that the production database sees.
 
 #### Q2: Why use `__init_subclass__` instead of a decorator or a hardcoded dictionary for the rule registry?
 **Answer:** A hardcoded list creates tight coupling: every new rule requires editing a central file, causing merge conflicts in multi-contributor repositories. A decorator (e.g. `@register`) is easy to forget on new rules. `__init_subclass__` guarantees that *every* concrete subclass of `Rule` is automatically registered the moment its module is loaded, satisfying our core architectural requirement: "Adding a new rule must require adding exactly one file in `rules/`".
@@ -192,14 +192,14 @@ except ValueError as e:
 
 ### 1. Files Created and What Each Does
 
-- **`src/migrationguard/rules/helpers.py`**:
+- **`src/aperture/rules/helpers.py`**:
   Common AST inspection functions shared across rules:
   - `get_table_name(stmt)`: Extracts relation name from various statement types (`AlterTableStmt`, `DropStmt`, etc.).
   - `is_table_created_in_same_file(table_name, context)`: Checks if a table was created in a preceding `CREATE TABLE` statement within the same migration file.
   - `has_preceding_lock_timeout(context)`: Checks if a previous statement configured `SET lock_timeout`.
   - `is_alter_table_drop_column(cmd)`: Verifies if an `AlterTableCmd` is dropping a column.
 
-- **Rule Implementations (`src/migrationguard/rules/`)**:
+- **Rule Implementations (`src/aperture/rules/`)**:
   - `mg001_drop_column_or_table.py` (`MG001` - ERROR): Flags `DROP TABLE` and `ALTER TABLE ... DROP COLUMN` which cause immediate data loss.
   - `mg002_rename_column_or_table.py` (`MG002` - WARNING): Flags table/column renames that break running application versions during rolling deploys.
   - `mg003_add_column_not_null_without_default.py` (`MG003` - ERROR): Flags `ADD COLUMN ... NOT NULL` without a default value, which fails on non-empty tables and locks the relation.
@@ -332,19 +332,19 @@ Together, they ensure 96%+ test coverage and protect against regressions.
 
 ### 1. Files Created/Completed and What Each Does
 
-- **`src/migrationguard/config.py`**:
+- **`src/aperture/config.py`**:
   - `Config`, `RuleConfig`: Pydantic v2 models validating configuration settings (`fail_on`, `migration_paths`, `large_tables`, and `rules`). Extra fields are strictly forbidden (`extra="forbid"`) to catch typos.
-  - `load_config`, `load_config_from_yaml`: Parses YAML files via PyYAML, validates data schemas, and formats helpful error messages that explicitly name offending fields. Automatically discovers `migrationguard.yml` in the current working directory.
-- **`src/migrationguard/suppression.py`**:
-  - `parse_suppressions`: Scans statement comments for inline suppression directives in the format `-- migrationguard:ignore <RULE_ID> <reason>`.
+  - `load_config`, `load_config_from_yaml`: Parses YAML files via PyYAML, validates data schemas, and formats helpful error messages that explicitly name offending fields. Automatically discovers `aperture.yml` in the current working directory.
+- **`src/aperture/suppression.py`**:
+  - `parse_suppressions`: Scans statement comments for inline suppression directives in the format `-- aperture:ignore <RULE_ID> <reason>`.
   - Enforces mandatory justification: if an ignore directive omits a reason, it emits an `MG000` finding (severity `WARNING`) and refuses to suppress the rule.
-- **`src/migrationguard/engine.py`**:
+- **`src/aperture/engine.py`**:
   - `check_statements`, `check_file`, `check_files`: The pipeline coordinator that takes parsed statements and configuration, evaluates active rules, applies per-rule severity overrides, and tags suppressed findings (`suppressed=True`, `suppression_reason=...`).
   - `compute_exit_code`: Determines CLI exit status (0 for clean pass or only suppressed findings, 1 if any unsuppressed finding meets or exceeds the `fail_on` threshold).
-- **`src/migrationguard/discovery.py`**:
+- **`src/aperture/discovery.py`**:
   - `discover_files`: Unified file locator supporting three discovery modes: explicit file/directory paths, `git diff --name-only <base>...HEAD`, and glob patterns from configuration.
   - Filters strictly for existing `.sql` files and provides helpful diagnostic errors when `git` is missing or an invalid base ref is given.
-- **`examples/migrationguard.yml`**:
+- **`examples/aperture.yml`**:
   - A reference configuration template explaining every configurable setting (`fail_on`, `migration_paths`, `large_tables`, per-rule overrides).
 - **Unit & End-to-End Tests**:
   - `tests/unit/test_config.py`: Tests default values, YAML parsing, invalid severities, bad fields, and fallback discovery.
@@ -451,8 +451,8 @@ Named capture groups make regular expressions readable and maintainable by allow
 ```python
 import re
 
-pattern = re.compile(r"-- migrationguard:ignore\s+(?P<rule_id>\w+)\s+(?P<reason>.+)")
-match = pattern.match("-- migrationguard:ignore MG001 Dropping legacy table")
+pattern = re.compile(r"-- aperture:ignore\s+(?P<rule_id>\w+)\s+(?P<reason>.+)")
+match = pattern.match("-- aperture:ignore MG001 Dropping legacy table")
 if match:
     print(match.group("rule_id"))  # "MG001"
     print(match.group("reason"))  # "Dropping legacy table"
@@ -463,22 +463,22 @@ if match:
 ### 4. Design Decisions & Interview Questions
 
 #### Q1: Why is an inline suppression reason mandatory, producing an `MG000` finding when missing?
-**Answer:** In production engineering, suppressing a safety check without documenting *why* creates hidden technical debt and defeats the purpose of automated guardrails. By requiring a mandatory explanation, teams ensure an audit trail directly in the SQL file (e.g. "Dropping legacy column after verifying zero app queries in release v2.4"). If an engineer simply writes `-- migrationguard:ignore MG001`, MigrationGuard refuses to suppress the rule and flags an `MG000` warning, enforcing team accountability.
+**Answer:** In production engineering, suppressing a safety check without documenting *why* creates hidden technical debt and defeats the purpose of automated guardrails. By requiring a mandatory explanation, teams ensure an audit trail directly in the SQL file (e.g. "Dropping legacy column after verifying zero app queries in release v2.4"). If an engineer simply writes `-- aperture:ignore MG001`, Aperture refuses to suppress the rule and flags an `MG000` warning, enforcing team accountability.
 
 #### Q2: Why does `compute_exit_code` ignore suppressed findings even if their severity exceeds `fail_on`?
 **Answer:** Suppressed findings represent deliberate, DBA-reviewed exceptions to safety rules. If suppressed findings still triggered a non-zero exit code, developers would have no way to merge intentional migrations without altering global CI settings. However, suppressed findings are still included in the final report (marked with `suppressed=True` and their reason) so that pull request reviewers and auditors have full visibility into every exception granted.
 
 #### Q3: Why support both explicit file paths, config globs, and `git diff` for file discovery?
 **Answer:** Different operating contexts require different discovery modes:
-1. **Local CLI (`migrationguard check path/to/001.sql`)**: Engineers developing a single new migration want to test only that specific file.
+1. **Local CLI (`aperture check path/to/001.sql`)**: Engineers developing a single new migration want to test only that specific file.
 2. **Pre-commit / CI on PRs (`git diff --name-only origin/main...HEAD`)**: In a large repository with hundreds of historical migrations, re-analyzing old migrations on every commit is slow and noisy; scanning only the changed files in the PR ensures fast, targeted feedback.
 3. **Full audit / Scheduled scans (`config.migration_paths`)**: Teams auditing their whole codebase need glob discovery to find all migrations across all microservice directories.
 
 #### Q4: Why forbid unknown/extra fields in the configuration schema?
-**Answer:** Configuration errors frequently happen due to subtle typos—such as writing `rules_override` instead of `rules`, or `failon` instead of `fail_on`. If a parser silently ignores unrecognized fields, developers believe their configuration is active when it is actually doing nothing. By enforcing `extra="forbid"` in Pydantic, MigrationGuard fails fast with a clear error pointing out the exact unrecognized field name.
+**Answer:** Configuration errors frequently happen due to subtle typos—such as writing `rules_override` instead of `rules`, or `failon` instead of `fail_on`. If a parser silently ignores unrecognized fields, developers believe their configuration is active when it is actually doing nothing. By enforcing `extra="forbid"` in Pydantic, Aperture fails fast with a clear error pointing out the exact unrecognized field name.
 
 #### Q5: Why does `engine.py` decouple rule execution from exit code computation and reporting?
-**Answer:** In the MigrationGuard architecture, `check_statements()` is a pure domain function: it takes parsed statements and configuration, evaluates rules, and returns plain `Finding` data objects. `compute_exit_code()` is a separate calculation that determines process status. Separating execution from exit code computation allows the same engine to be used by the CLI (which exits 0 or 1), a GitHub Action (which might annotate PRs without failing the build), or a Python API/library without coupling the core analysis to OS process termination.
+**Answer:** In the Aperture architecture, `check_statements()` is a pure domain function: it takes parsed statements and configuration, evaluates rules, and returns plain `Finding` data objects. `compute_exit_code()` is a separate calculation that determines process status. Separating execution from exit code computation allows the same engine to be used by the CLI (which exits 0 or 1), a GitHub Action (which might annotate PRs without failing the build), or a Python API/library without coupling the core analysis to OS process termination.
 
 ---
 
@@ -486,16 +486,16 @@ if match:
 
 ### 1. Files Created/Completed and What Each Does
 
-- **`src/migrationguard/cli.py`**:
+- **`src/aperture/cli.py`**:
   - Full-featured command-line application built with Typer exposing four user commands:
     - `check`: Scans migration files via explicit paths, `git diff` against a base ref, or config globs. Evaluates rules, renders formatted reports, writes to stdout or file, and exits with 0 (clean pass), 1 (violations at or above `fail_on`), or 2 (bad configuration, invalid options, or SQL parse errors).
     - `list-rules`: Displays a clean catalog table of all registered rules, default severities, and descriptions.
-    - `init`: Generates a starter `migrationguard.yml` configuration file with sensible defaults, refusing to overwrite if one already exists.
+    - `init`: Generates a starter `aperture.yml` configuration file with sensible defaults, refusing to overwrite if one already exists.
     - `explain <rule_id>`: Shows in-depth educational details for a rule: description, why the Postgres operation is dangerous (locks, table rewrites, connection pool stalls), and concrete safe alternatives.
-- **`src/migrationguard/reporters/`**:
+- **`src/aperture/reporters/`**:
   - `__init__.py`: Provides `render_report()`, a single polymorphic dispatch interface that takes findings and a format string (`console`, `markdown`, `json`, `sarif`) and delegates to the appropriate formatter.
   - `console.py`: Colorized terminal reporter that groups findings by file with line numbers, severity badges (`[ERROR]`, `[WARNING]`, `[INFO]`, `[SUPPRESSED]`), statement SQL snippets, safe suggestions, and summary statistics.
-  - `markdown.py`: PR comment reporter starting with the hidden marker `<!-- migrationguard -->`, featuring a summary table, status badge, and collapsible `<details>` blocks for each finding.
+  - `markdown.py`: PR comment reporter starting with the hidden marker `<!-- aperture -->`, featuring a summary table, status badge, and collapsible `<details>` blocks for each finding.
   - `json_reporter.py`: Machine-readable JSON output containing full finding attributes and summary counts.
   - `sarif.py`: Generates OASIS SARIF 2.1.0 output compatible with GitHub Code Scanning, complete with driver rule metadata, file URIs, line numbers, and in-source suppressions.
 - **Unit & Snapshot Tests**:
@@ -507,7 +507,7 @@ if match:
 ### 2. How Data Flows Between Them
 
 ```
-User runs CLI: migrationguard check --format markdown --output pr_comment.md
+User runs CLI: aperture check --format markdown --output pr_comment.md
                                    │
                                    ▼
  [ cli.py: check() ] ──> Loads config.py & discovers files via discovery.py
@@ -576,13 +576,13 @@ def render_report(findings: list[Finding], format_name: str) -> str:
 ```
 
 #### Concept 4: Standardized Interchange Formats (JSON & SARIF 2.1.0)
-SARIF (Static Analysis Results Interchange Format) is a JSON-based OASIS standard for static analysis tools. By generating valid SARIF 2.1.0, MigrationGuard can upload findings directly to GitHub Security Code Scanning (`github/codeql-action/upload-sarif`), displaying annotations directly on PR file diffs.
+SARIF (Static Analysis Results Interchange Format) is a JSON-based OASIS standard for static analysis tools. By generating valid SARIF 2.1.0, Aperture can upload findings directly to GitHub Security Code Scanning (`github/codeql-action/upload-sarif`), displaying annotations directly on PR file diffs.
 
 ```python
 sarif_doc = {
     "version": "2.1.0",
     "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
-    "runs": [{"tool": {"driver": {"name": "MigrationGuard"}}, "results": []}],
+    "runs": [{"tool": {"driver": {"name": "Aperture"}}, "results": []}],
 }
 ```
 
@@ -597,17 +597,17 @@ sarif_doc = {
 - **Exit 2 (System / Usage Error)**: The tool failed to run because of invalid arguments, non-existent files, malformed YAML configuration, or SQL syntax errors.
 This distinction prevents CI pipelines from confusing a broken config or syntax bug with a lint failure.
 
-#### Q2: Why must the Markdown reporter output begin with the hidden comment `<!-- migrationguard -->`?
-**Answer:** In automated CI workflows (like GitHub Actions), every new commit pushed to a pull request runs MigrationGuard. If the action posted a brand new PR comment on every commit, the PR conversation would become flooded with duplicate bot comments. By prefixing the comment with `<!-- migrationguard -->`, subsequent workflow runs can query the GitHub Comments API, find the existing comment containing this unique marker, and update it in-place using `PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}`.
+#### Q2: Why must the Markdown reporter output begin with the hidden comment `<!-- aperture -->`?
+**Answer:** In automated CI workflows (like GitHub Actions), every new commit pushed to a pull request runs Aperture. If the action posted a brand new PR comment on every commit, the PR conversation would become flooded with duplicate bot comments. By prefixing the comment with `<!-- aperture -->`, subsequent workflow runs can query the GitHub Comments API, find the existing comment containing this unique marker, and update it in-place using `PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}`.
 
 #### Q3: Why separate the CLI interface from the reporter implementations?
 **Answer:** Following the Single Responsibility Principle, `cli.py` is only responsible for parsing command-line flags, handling process errors, and writing output. Reporters are pure formatting functions (`list[Finding] -> str`). This separation allows reporters to be tested independently in unit tests without CLI dependencies, and allows other integrations (such as a GitHub Action or Python library) to import reporters directly.
 
-#### Q4: Why does MigrationGuard implement SARIF 2.1.0 rather than only custom JSON?
+#### Q4: Why does Aperture implement SARIF 2.1.0 rather than only custom JSON?
 **Answer:** While custom JSON is easy to parse with simple scripts, SARIF 2.1.0 is the industry standard supported natively by GitHub, GitLab, and Azure DevOps. GitHub Code Scanning ingests SARIF to automatically render inline annotations directly on the exact lines of code in the PR diff, create security alerts, and track remediation over time without writing custom comment-posting glue code.
 
-#### Q5: Why does `migrationguard init` refuse to overwrite existing configuration files?
-**Answer:** Safe defaults protect user data. If a developer accidentally runs `migrationguard init` inside an established project with custom table exemptions and rule severity overrides, silently overwriting `migrationguard.yml` would erase their customized configuration. Refusing to overwrite and returning an error code forces intentionality.
+#### Q5: Why does `aperture init` refuse to overwrite existing configuration files?
+**Answer:** Safe defaults protect user data. If a developer accidentally runs `aperture init` inside an established project with custom table exemptions and rule severity overrides, silently overwriting `aperture.yml` would erase their customized configuration. Refusing to overwrite and returning an error code forces intentionality.
 
 ---
 
@@ -618,17 +618,17 @@ This distinction prevents CI pipelines from confusing a broken config or syntax 
 - **`Dockerfile`**:
   - Production-ready, security-hardened container based on `python:3.12-slim`.
   - Creates a dedicated non-root user and group (`appuser`, UID 1000) and switches to it.
-  - Installs `migrationguard` and configures `ENTRYPOINT ["migrationguard"]` for direct CLI usage.
+  - Installs `aperture` and configures `ENTRYPOINT ["aperture"]` for direct CLI usage.
 - **`action.yml`**:
   - Docker-based GitHub Action specification declaring inputs (`config`, `base-ref`, `fail-on`, `github-token`, `comment-on-pr`) and outputs (`findings-count`, `passed`).
   - Mounts repository code into the container and invokes `/app/entrypoint.sh`.
-- **`src/migrationguard/github_comment.py`**:
+- **`src/aperture/github_comment.py`**:
   - Connects to GitHub's REST API (`/repos/{owner}/{repo}/issues/{pr}/comments`).
-  - Searches existing comments for the unique tracking marker `<!-- migrationguard -->`.
+  - Searches existing comments for the unique tracking marker `<!-- aperture -->`.
   - Uses `PATCH` to update existing comments or `POST` to create a new comment if none exists.
   - Enforces strict token privacy: tokens are never printed, logged, or included in error messages.
-- **`src/migrationguard/action_runner.py` & `entrypoint.sh`**:
-  - The bridge between GitHub Actions and MigrationGuard: parses `INPUT_*` environment variables, executes migration scanning, writes outputs to `$GITHUB_OUTPUT`, prints reports, and posts PR comments.
+- **`src/aperture/action_runner.py` & `entrypoint.sh`**:
+  - The bridge between GitHub Actions and Aperture: parses `INPUT_*` environment variables, executes migration scanning, writes outputs to `$GITHUB_OUTPUT`, prints reports, and posts PR comments.
 - **`.github/workflows/ci.yml`**:
   - Continuous Integration pipeline testing every push and PR: runs `ruff` lint and format checks, `mypy` strict type checking, `pytest` unit test suite with coverage, and verifies Docker image builds.
 - **`.github/workflows/self-test.yml`**:
@@ -657,7 +657,7 @@ Developer opens / updates a Pull Request
                     ├───────────────────────────────┐
                     ▼                               ▼
        [ discover_files() ]               [ load_config() ]
-       (git diff origin/main...HEAD)       (migrationguard.yml)
+       (git diff origin/main...HEAD)       (aperture.yml)
                     │                               │
                     └───────────────┬───────────────┘
                                     │
@@ -670,7 +670,7 @@ Developer opens / updates a Pull Request
                     ┌───────────────┴───────────────┐
                     ▼                               ▼
           Writes $GITHUB_OUTPUT             [ github_comment.py ]
-        findings-count=X, passed=bool       Finds <!-- migrationguard -->
+        findings-count=X, passed=bool       Finds <!-- aperture -->
                     │                       Updates or posts PR comment
                     ▼                               │
           Console Log Output                        ▼
@@ -755,8 +755,8 @@ except Exception as err:
 #### Q2: Why run as a dedicated non-root user (`USER appuser`) in the Dockerfile?
 **Answer:** Running containers as `root` (UID 0) is a major container security risk. If a container breakout vulnerability occurs, a root process inside the container can gain root privileges on the underlying host system. Creating `appuser` (UID 1000) and switching to it adheres to the Principle of Least Privilege, preventing unauthorized filesystem modifications on the host.
 
-#### Q3: Why post or update a single PR comment using `<!-- migrationguard -->` rather than creating a new comment on every commit?
-**Answer:** Pull requests often receive many commits during code review. If CI posted a new comment for every push, the PR discussion would be flooded with spam, drowning out reviewer feedback. By prefixing the comment with a hidden HTML comment marker `<!-- migrationguard -->`, subsequent CI runs locate the existing comment and update it in-place via `PATCH`, keeping the PR thread clean.
+#### Q3: Why post or update a single PR comment using `<!-- aperture -->` rather than creating a new comment on every commit?
+**Answer:** Pull requests often receive many commits during code review. If CI posted a new comment for every push, the PR discussion would be flooded with spam, drowning out reviewer feedback. By prefixing the comment with a hidden HTML comment marker `<!-- aperture -->`, subsequent CI runs locate the existing comment and update it in-place via `PATCH`, keeping the PR thread clean.
 
 #### Q4: How does the self-test workflow verify the GitHub Action without infinite recursion?
 **Answer:** The self-test workflow (`.github/workflows/self-test.yml`) tests the action locally using `uses: ./` on Ubuntu runners. It tests two explicit cases:

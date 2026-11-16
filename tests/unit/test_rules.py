@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from migrationguard.models import Finding, Severity, StatementContext
-from migrationguard.parser import parse_sql_string
-from migrationguard.rules import get_rule
+from aperture.models import Finding, Severity, StatementContext
+from aperture.parser import parse_sql_string
+from aperture.rules import get_rule
 
 
 def _check(rule_id: str, sql: str) -> list[Finding]:
@@ -360,7 +360,7 @@ def test_mg010_newly_created_table_is_safe() -> None:
 
 def test_helpers_edge_cases() -> None:
     """Verify helpers handle null/empty AST constructs gracefully."""
-    from migrationguard.rules.helpers import (
+    from aperture.rules.helpers import (
         get_table_name,
         is_alter_table_drop_column,
         is_table_created_in_same_file,

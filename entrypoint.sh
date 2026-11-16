@@ -3,7 +3,7 @@ set -e
 
 # If running within GitHub Actions, delegate to the action_runner
 if [ -n "$GITHUB_ACTIONS" ]; then
-    exec python -m migrationguard.action_runner "$@"
+    exec python -m aperture.action_runner "$@"
 else
-    exec migrationguard "$@"
+    exec aperture "$@"
 fi

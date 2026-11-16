@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from migrationguard.action_runner import run_action
+from aperture.action_runner import run_action
 
 
 def test_action_runner_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -12,7 +12,7 @@ def test_action_runner_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     migration_file = tmp_path / "001_safe.sql"
     migration_file.write_text("CREATE TABLE users (id int);", encoding="utf-8")
 
-    cfg_file = tmp_path / "migrationguard.yml"
+    cfg_file = tmp_path / "aperture.yml"
     cfg_file.write_text("fail_on: ERROR\n", encoding="utf-8")
 
     output_file = tmp_path / "github_output.txt"
@@ -25,7 +25,7 @@ def test_action_runner_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 
     # Mock discover_files to return our safe migration
     monkeypatch.setattr(
-        "migrationguard.action_runner.discover_files",
+        "aperture.action_runner.discover_files",
         lambda **_kwargs: [migration_file],
     )
 
@@ -50,7 +50,7 @@ def test_action_runner_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("GITHUB_OUTPUT", str(output_file))
 
     monkeypatch.setattr(
-        "migrationguard.action_runner.discover_files",
+        "aperture.action_runner.discover_files",
         lambda **_kwargs: [migration_file],
     )
 
@@ -72,7 +72,7 @@ def test_action_runner_no_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("GITHUB_OUTPUT", str(output_file))
 
     monkeypatch.setattr(
-        "migrationguard.action_runner.discover_files",
+        "aperture.action_runner.discover_files",
         lambda **_kwargs: [],
     )
 
@@ -97,11 +97,11 @@ def test_action_runner_post_comment(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("GITHUB_OUTPUT", str(output_file))
 
     monkeypatch.setattr(
-        "migrationguard.action_runner.discover_files",
+        "aperture.action_runner.discover_files",
         lambda **_kwargs: [migration_file],
     )
     monkeypatch.setattr(
-        "migrationguard.action_runner.get_pr_context_from_env",
+        "aperture.action_runner.get_pr_context_from_env",
         lambda: ("owner/repo", 42),
     )
 
@@ -111,7 +111,7 @@ def test_action_runner_post_comment(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         posted.append((token, repo, pr_num, body))
         return 777
 
-    monkeypatch.setattr("migrationguard.action_runner.post_or_update_comment", mock_post)
+    monkeypatch.setattr("aperture.action_runner.post_or_update_comment", mock_post)
 
     exit_code = run_action()
     assert exit_code == 0

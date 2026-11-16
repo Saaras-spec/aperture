@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from migrationguard.github_comment import (
+from aperture.github_comment import (
     GitHubCommentError,
-    find_migrationguard_comment,
+    find_aperture_comment,
     get_pr_context_from_env,
     post_or_update_comment,
 )
@@ -36,10 +36,10 @@ class FakeHTTPResponse:
 
 
 def test_find_comment_found(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify finding existing comment containing the migrationguard marker."""
+    """Verify finding existing comment containing the aperture marker."""
     comments = [
         {"id": 101, "body": "Regular review comment"},
-        {"id": 202, "body": "<!-- migrationguard -->\n## 🛡️ MigrationGuard Report\n..."},
+        {"id": 202, "body": "<!-- aperture -->\n## 🛡️ Aperture Report\n..."},
     ]
 
     def mock_urlopen(req: urllib.request.Request) -> FakeHTTPResponse:
@@ -49,7 +49,7 @@ def test_find_comment_found(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
 
-    cid = find_migrationguard_comment("secret-token", "owner/repo", 42)
+    cid = find_aperture_comment("secret-token", "owner/repo", 42)
     assert cid == 202
 
 
@@ -64,7 +64,7 @@ def test_find_comment_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
 
-    cid = find_migrationguard_comment("secret-token", "owner/repo", 42)
+    cid = find_aperture_comment("secret-token", "owner/repo", 42)
     assert cid is None
 
 
@@ -84,7 +84,7 @@ def test_find_comment_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
 
     secret = "my-super-secret-token-12345"
     with pytest.raises(GitHubCommentError) as exc_info:
-        find_migrationguard_comment(secret, "owner/repo", 42)
+        find_aperture_comment(secret, "owner/repo", 42)
 
     assert "HTTP 403" in str(exc_info.value)
     # Ensure token is NEVER leaked in error message
@@ -104,13 +104,13 @@ def test_post_comment_creates_new(monkeypatch: pytest.MonkeyPatch) -> None:
         if req.get_method() == "POST":
             assert isinstance(req.data, bytes)
             payload = json.loads(req.data.decode("utf-8"))
-            assert "<!-- migrationguard -->" in payload["body"]
+            assert "<!-- aperture -->" in payload["body"]
             return FakeHTTPResponse({"id": 303, "body": payload["body"]})
         raise AssertionError(f"Unexpected method: {req.get_method()}")
 
     monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
 
-    body = "<!-- migrationguard -->\nNew report"
+    body = "<!-- aperture -->\nNew report"
     cid = post_or_update_comment("test-token", "owner/repo", 99, body)
     assert cid == 303
     assert calls == ["GET", "POST"]
@@ -118,7 +118,7 @@ def test_post_comment_creates_new(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_post_comment_updates_existing(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify updates existing comment via PATCH when marker is found."""
-    existing_comment = [{"id": 404, "body": "<!-- migrationguard --> old report"}]
+    existing_comment = [{"id": 404, "body": "<!-- aperture --> old report"}]
     calls: list[str] = []
 
     def mock_urlopen(req: urllib.request.Request) -> FakeHTTPResponse:
@@ -132,7 +132,7 @@ def test_post_comment_updates_existing(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
 
-    body = "<!-- migrationguard -->\nUpdated report"
+    body = "<!-- aperture -->\nUpdated report"
     cid = post_or_update_comment("test-token", "owner/repo", 99, body)
     assert cid == 404
     assert calls == ["GET", "PATCH"]
@@ -186,7 +186,7 @@ def test_get_pr_context_issue_fallback(tmp_path: Path, monkeypatch: pytest.Monke
 def test_post_comment_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify HTTP error during comment post raises GitHubCommentError."""
     monkeypatch.setattr(
-        "migrationguard.github_comment.find_migrationguard_comment",
+        "aperture.github_comment.find_aperture_comment",
         lambda *_args, **_kwargs: None,
     )
 

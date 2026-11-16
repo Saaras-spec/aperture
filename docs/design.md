@@ -1,4 +1,4 @@
-# MigrationGuard Design Document
+# Aperture Design Document
 
 ## 1. Problem Statement
 
@@ -11,13 +11,13 @@ In production PostgreSQL databases under active load:
 - Dropping tables or columns causes immediate, irreversible data loss.
 - An `ALTER TABLE` without a prior `SET lock_timeout` enters a FIFO lock queue behind slow queries and blocks all subsequent incoming queries (including quick `SELECT`s), rapidly exhausting connection pools and causing a site-wide outage.
 
-**MigrationGuard** solves this problem by statically inspecting PostgreSQL migrations in pull requests using PostgreSQL's native parser, flagging risky statements before they reach production, and recommending safe zero-downtime alternatives.
+**Aperture** solves this problem by statically inspecting PostgreSQL migrations in pull requests using PostgreSQL's native parser, flagging risky statements before they reach production, and recommending safe zero-downtime alternatives.
 
 ---
 
 ## 2. System Architecture
 
-MigrationGuard follows a deterministic, five-stage pipeline:
+Aperture follows a deterministic, five-stage pipeline:
 
 ```
 [ Input Sources ]
@@ -33,7 +33,7 @@ MigrationGuard follows a deterministic, five-stage pipeline:
         │               Computes exact source line numbers and extracts comments
         │
         ▼
-[ 3. Suppression ] ────> Parses '-- migrationguard:ignore <RULE_ID> <reason>'
+[ 3. Suppression ] ────> Parses '-- aperture:ignore <RULE_ID> <reason>'
         │               Enforces mandatory justification (missing reason -> MG000)
         │
         ▼
@@ -73,8 +73,8 @@ MigrationGuard follows a deterministic, five-stage pipeline:
 - **Why**: Satisfies the core architectural principle: adding a new rule requires adding exactly one file in `rules/` without modifying central files or causing merge conflicts.
 
 ### 3.4. Mandatory Inline Suppression Justifications
-- **Decision**: Inline suppression comments (`-- migrationguard:ignore MGXXX <reason>`) require a non-empty explanation; missing reasons generate an `MG000` finding and leave the rule active.
-- **Alternatives Considered**: Silent bare ignore comments (`-- migrationguard:ignore`).
+- **Decision**: Inline suppression comments (`-- aperture:ignore MGXXX <reason>`) require a non-empty explanation; missing reasons generate an `MG000` finding and leave the rule active.
+- **Alternatives Considered**: Silent bare ignore comments (`-- aperture:ignore`).
 - **Why**: Guardrails without mandatory justification foster bad habits. Enforcing reasons creates a visible audit trail directly in the migration history.
 
 ### 3.5. Contextual Exemption for Newly Created Tables

@@ -4,14 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from migrationguard.config import (
+from aperture.config import (
     Config,
     ConfigError,
     RuleConfig,
     load_config,
     load_config_from_yaml,
 )
-from migrationguard.models import Severity
+from aperture.models import Severity
 
 
 def test_default_config() -> None:
@@ -119,9 +119,9 @@ def test_load_config_default_fallback(tmp_path: Path, monkeypatch: pytest.Monkey
 
 
 def test_load_config_discovers_in_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify load_config automatically discovers migrationguard.yml in cwd."""
+    """Verify load_config automatically discovers aperture.yml in cwd."""
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "migrationguard.yml").write_text("fail_on: WARNING\n", encoding="utf-8")
+    (tmp_path / "aperture.yml").write_text("fail_on: WARNING\n", encoding="utf-8")
     config = load_config()
     assert config.fail_on == Severity.WARNING
 

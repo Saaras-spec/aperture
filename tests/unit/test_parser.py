@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from migrationguard.parser import ParseError, parse_sql_file, parse_sql_string
+from aperture.parser import ParseError, parse_sql_file, parse_sql_string
 
 
 def test_parse_multiple_statements() -> None:
@@ -122,7 +122,7 @@ DROP TABLE items;
 
 def test_compute_line_number_edge_cases() -> None:
     """Verify line number computation with negative and out-of-bounds offsets."""
-    from migrationguard.parser import _compute_line_number
+    from aperture.parser import _compute_line_number
 
     assert _compute_line_number("line1\nline2", -5) == 1
     assert _compute_line_number("line1\nline2", 1000) == 2

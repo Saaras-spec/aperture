@@ -2,7 +2,7 @@
 
 import pytest
 
-from migrationguard.models import Finding, ParsedStatement, Severity, StatementContext
+from aperture.models import Finding, ParsedStatement, Severity, StatementContext
 
 
 def test_severity_ordering() -> None:

@@ -1,8 +1,8 @@
-# 🛡️ MigrationGuard
+# 🛡️ Aperture
 
-**MigrationGuard** is an open-source CLI and GitHub Action that scans PostgreSQL migration files in pull requests, detects risky operations (table locks, full scans, table rewrites, data loss), and reports actionable safe alternatives before migrations reach production.
+**Aperture** is an open-source CLI and GitHub Action that scans PostgreSQL migration files in pull requests, detects risky operations (table locks, full scans, table rewrites, data loss), and reports actionable safe alternatives before migrations reach production.
 
-Powered by PostgreSQL's actual parser (`pglast`), MigrationGuard provides zero false positives on PostgreSQL grammar without relying on brittle regular expressions.
+Powered by PostgreSQL's actual parser (`pglast`), Aperture provides zero false positives on PostgreSQL grammar without relying on brittle regular expressions.
 
 ---
 
@@ -11,38 +11,38 @@ Powered by PostgreSQL's actual parser (`pglast`), MigrationGuard provides zero f
 ### 1. Installation
 
 ```bash
-pip install migrationguard
+pip install aperture
 ```
 
 Or run via Docker:
 
 ```bash
-docker run --rm -v $(pwd):/app/workspace ghcr.io/saaras-spec/migrationguard:latest check
+docker run --rm -v $(pwd):/app/workspace ghcr.io/saaras-spec/aperture:latest check
 ```
 
 ### 2. Initialize Configuration
 
 ```bash
-migrationguard init
+aperture init
 ```
 
-This generates a starter `migrationguard.yml` in your repository root.
+This generates a starter `aperture.yml` in your repository root.
 
 ### 3. Run Checks
 
 ```bash
 # Scan all migration files matching configured globs
-migrationguard check
+aperture check
 
 # Scan specific migration files or directories
-migrationguard check migrations/001_create_users.sql
+aperture check migrations/001_create_users.sql
 
 # Scan only migrations changed in a pull request against main
-migrationguard check --base-ref origin/main
+aperture check --base-ref origin/main
 
 # Output in different formats (console, markdown, json, sarif)
-migrationguard check --format markdown --output pr_comment.md
-migrationguard check --format sarif --output results.sarif
+aperture check --format markdown --output pr_comment.md
+aperture check --format sarif --output results.sarif
 ```
 
 ---
@@ -51,16 +51,16 @@ migrationguard check --format sarif --output results.sarif
 
 | Command | Description |
 | :--- | :--- |
-| `migrationguard check [PATHS...]` | Scan migration files for dangerous operations |
-| `migrationguard list-rules` | Display a catalog table of all registered rules |
-| `migrationguard explain <RULE_ID>` | Show in-depth explanation, locking risk, and safe alternative |
-| `migrationguard init` | Create a starter `migrationguard.yml` configuration file |
+| `aperture check [PATHS...]` | Scan migration files for dangerous operations |
+| `aperture list-rules` | Display a catalog table of all registered rules |
+| `aperture explain <RULE_ID>` | Show in-depth explanation, locking risk, and safe alternative |
+| `aperture init` | Create a starter `aperture.yml` configuration file |
 
 ---
 
 ## 🤖 GitHub Action Usage
 
-Integrate MigrationGuard directly into your GitHub Actions CI pipeline:
+Integrate Aperture directly into your GitHub Actions CI pipeline:
 
 ```yaml
 name: Migration Safety Guard
@@ -84,8 +84,8 @@ jobs:
         with:
           fetch-depth: 0 # Full history for git diff
 
-      - name: Run MigrationGuard
-        uses: Saaras-spec/migrationguard@main
+      - name: Run Aperture
+        uses: Saaras-spec/aperture@main
         with:
           base-ref: "origin/${{ github.base_ref }}"
           fail-on: "ERROR"
@@ -117,15 +117,15 @@ jobs:
 To suppress a rule for an approved, DBA-reviewed statement, place an ignore comment on the line preceding the statement. **A non-empty justification reason is mandatory:**
 
 ```sql
--- migrationguard:ignore MG001 Dropping legacy table after verifying zero queries in v2.4
+-- aperture:ignore MG001 Dropping legacy table after verifying zero queries in v2.4
 DROP TABLE legacy_users;
 ```
 
-If an ignore directive omits the reason (e.g. `-- migrationguard:ignore MG001`), MigrationGuard flags an `MG000` warning and refuses to suppress the rule.
+If an ignore directive omits the reason (e.g. `-- aperture:ignore MG001`), Aperture flags an `MG000` warning and refuses to suppress the rule.
 
 ---
 
-## ⚙️ Configuration (`migrationguard.yml`)
+## ⚙️ Configuration (`aperture.yml`)
 
 ```yaml
 fail_on: ERROR

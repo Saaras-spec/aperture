@@ -1,12 +1,12 @@
-name: "MigrationGuard"
+name: "Aperture"
 description: "Scan PostgreSQL migration files for dangerous operations, locks, and regressions."
-author: "MigrationGuard Contributors"
+author: "Aperture Contributors"
 
 inputs:
   config:
-    description: "Path to migrationguard.yml configuration file"
+    description: "Path to aperture.yml configuration file"
     required: false
-    default: "migrationguard.yml"
+    default: "aperture.yml"
   base-ref:
     description: "Git base ref to compare against HEAD via git diff (e.g. origin/main)"
     required: false

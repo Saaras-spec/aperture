@@ -11,12 +11,12 @@ COPY pyproject.toml README.md ./
 COPY src/ ./src/
 COPY entrypoint.sh /app/entrypoint.sh
 
-# Install migrationguard package and ensure entrypoint script is executable
+# Install aperture package and ensure entrypoint script is executable
 RUN chmod +x /app/entrypoint.sh && \
     pip install --no-cache-dir .
 
 # Switch to non-root user
 USER appuser
 
-ENTRYPOINT ["migrationguard"]
+ENTRYPOINT ["aperture"]
 CMD ["--help"]

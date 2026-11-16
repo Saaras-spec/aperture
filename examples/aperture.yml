@@ -1,0 +1,72 @@
+# Aperture Configuration File
+# Place this file as 'aperture.yml' in the root of your repository.
+
+# The minimum severity level that causes Aperture to exit with non-zero status (code 1).
+# Allowed values: INFO, WARNING, ERROR. Default: ERROR
+fail_on: ERROR
+
+# Glob patterns used by 'aperture check' to locate SQL migration files.
+# Default: ["migrations/**/*.sql", "migrations/*.sql"]
+migration_paths:
+  - "migrations/**/*.sql"
+  - "db/migrate/*.sql"
+
+# List of high-traffic or large table names.
+# Rules can apply stricter validation checks on tables identified in this list.
+large_tables:
+  - users
+  - orders
+  - audit_logs
+  - transactions
+
+# Per-rule configuration: enable/disable rules and override default severities.
+rules:
+  # MG001: DROP TABLE or DROP COLUMN (irreversible data loss)
+  MG001:
+    enabled: true
+    severity: ERROR
+
+  # MG002: Rename column or table (breaks running app versions during rolling deploys)
+  MG002:
+    enabled: true
+    severity: WARNING
+
+  # MG003: ADD COLUMN ... NOT NULL without DEFAULT (fails on non-empty tables)
+  MG003:
+    enabled: true
+    severity: ERROR
+
+  # MG004: ALTER COLUMN SET NOT NULL on existing column (full scan under exclusive lock)
+  MG004:
+    enabled: true
+    severity: WARNING
+
+  # MG005: CREATE INDEX without CONCURRENTLY (locks writes for duration of build)
+  MG005:
+    enabled: true
+    severity: ERROR
+
+  # MG006: ADD FOREIGN KEY without NOT VALID (scans both tables under lock)
+  MG006:
+    enabled: true
+    severity: ERROR
+
+  # MG007: ADD CHECK constraint without NOT VALID (scans table under exclusive lock)
+  MG007:
+    enabled: true
+    severity: WARNING
+
+  # MG008: ALTER COLUMN TYPE (rewrites entire table and rebuilds indexes)
+  MG008:
+    enabled: true
+    severity: ERROR
+
+  # MG009: UPDATE or DELETE without WHERE (mass row modification/deletion)
+  MG009:
+    enabled: true
+    severity: ERROR
+
+  # MG010: Risky ALTER TABLE with no preceding SET lock_timeout in the same file
+  MG010:
+    enabled: true
+    severity: WARNING

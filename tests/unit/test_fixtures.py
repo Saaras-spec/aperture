@@ -1,4 +1,4 @@
-"""Parametrized fixture tests for all MigrationGuard rules.
+"""Parametrized fixture tests for all Aperture rules.
 
 Each bad fixture must trigger the expected rule.
 Each good fixture must produce zero findings.
@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from migrationguard.models import StatementContext
-from migrationguard.parser import parse_sql_string
-from migrationguard.rules import get_all_rules
+from aperture.models import StatementContext
+from aperture.parser import parse_sql_string
+from aperture.rules import get_all_rules
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures"
 BAD_DIR = FIXTURES_DIR / "bad"

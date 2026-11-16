@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from migrationguard.models import Finding, Severity
-from migrationguard.reporters import (
+from aperture.models import Finding, Severity
+from aperture.reporters import (
     format_console,
     format_json,
     format_markdown,
@@ -65,8 +65,8 @@ def test_markdown_reporter_structure(sample_findings: list[Finding]) -> None:
     """Verify markdown reporter starts with hidden marker and contains tables and details."""
     output = format_markdown(sample_findings)
     # Must start with exact hidden marker for PR comment updater
-    assert output.startswith("<!-- migrationguard -->")
-    assert "## 🛡️ MigrationGuard Report" in output
+    assert output.startswith("<!-- aperture -->")
+    assert "## 🛡️ Aperture Report" in output
     assert "| Severity | Rule | Location | Message | Status |" in output
     assert "🔴 ERROR" in output
     assert "⚪ SUPPRESSED" in output
@@ -78,7 +78,7 @@ def test_markdown_reporter_structure(sample_findings: list[Finding]) -> None:
 def test_markdown_reporter_empty() -> None:
     """Verify markdown report when no findings are detected."""
     output = format_markdown([])
-    assert output.startswith("<!-- migrationguard -->")
+    assert output.startswith("<!-- aperture -->")
     assert "Zero risks detected" in output
 
 
@@ -120,7 +120,7 @@ def test_sarif_reporter_validation(sample_findings: list[Finding]) -> None:
 
     run = doc["runs"][0]
     tool = run["tool"]["driver"]
-    assert tool["name"] == "MigrationGuard"
+    assert tool["name"] == "Aperture"
     assert "rules" in tool
     assert any(r["id"] == "MG001" for r in tool["rules"])
 
@@ -148,7 +148,7 @@ def test_sarif_reporter_validation(sample_findings: list[Finding]) -> None:
 def test_render_report_dispatch(sample_findings: list[Finding]) -> None:
     """Verify render_report dispatches correctly across all formats."""
     assert "Summary:" in render_report(sample_findings, "console")
-    assert "<!-- migrationguard -->" in render_report(sample_findings, "markdown")
+    assert "<!-- aperture -->" in render_report(sample_findings, "markdown")
     assert '"summary":' in render_report(sample_findings, "json")
     assert '"version": "2.1.0"' in render_report(sample_findings, "sarif")
 

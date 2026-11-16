@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from migrationguard.config import Config
-from migrationguard.discovery import (
+from aperture.config import Config
+from aperture.discovery import (
     DiscoveryError,
     discover_files,
     discover_from_git_diff,

@@ -1,14 +1,14 @@
 """Unit tests for suppression module."""
 
-from migrationguard.models import Severity
-from migrationguard.parser import parse_sql_string
-from migrationguard.suppression import parse_suppressions
+from aperture.models import Severity
+from aperture.parser import parse_sql_string
+from aperture.suppression import parse_suppressions
 
 
 def test_valid_suppression_with_reason() -> None:
     """Verify single line suppression with reason is parsed correctly."""
     sql = """
-    -- migrationguard:ignore MG001 Dropping deprecated table verified by DBA
+    -- aperture:ignore MG001 Dropping deprecated table verified by DBA
     DROP TABLE users;
     """
     stmts = parse_sql_string(sql, file_path="001.sql")
@@ -22,8 +22,8 @@ def test_valid_suppression_with_reason() -> None:
 def test_multiple_suppressions_on_same_statement() -> None:
     """Verify multiple ignore comments on the same statement are collected."""
     sql = """
-    -- migrationguard:ignore MG001 Dropping legacy column
-    -- migrationguard:ignore MG010 Approved lock window
+    -- aperture:ignore MG001 Dropping legacy column
+    -- aperture:ignore MG010 Approved lock window
     ALTER TABLE users DROP COLUMN legacy;
     """
     stmts = parse_sql_string(sql, file_path="002.sql")
@@ -37,7 +37,7 @@ def test_multiple_suppressions_on_same_statement() -> None:
 def test_block_comment_suppression() -> None:
     """Verify block comments /* ... */ with suppression are parsed."""
     sql = """
-    /* migrationguard:ignore MG002 Renaming table with dual-read proxy in place */
+    /* aperture:ignore MG002 Renaming table with dual-read proxy in place */
     ALTER TABLE old_name RENAME TO new_name;
     """
     stmts = parse_sql_string(sql, file_path="003.sql")
@@ -49,7 +49,7 @@ def test_block_comment_suppression() -> None:
 def test_missing_reason_produces_mg000_warning() -> None:
     """Verify missing reason produces an MG000 finding and does not suppress the rule."""
     sql = """
-    -- migrationguard:ignore MG001
+    -- aperture:ignore MG001
     DROP TABLE users;
     """
     stmts = parse_sql_string(sql, file_path="bad_supp.sql")
@@ -66,7 +66,7 @@ def test_missing_reason_produces_mg000_warning() -> None:
 def test_empty_ignore_comment_produces_mg000() -> None:
     """Verify ignore comment with no rule ID or reason produces MG000 finding."""
     sql = """
-    -- migrationguard:ignore
+    -- aperture:ignore
     DROP TABLE users;
     """
     stmts = parse_sql_string(sql, file_path="empty_ignore.sql")

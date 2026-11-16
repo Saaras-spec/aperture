@@ -8,7 +8,7 @@ on:
 
 jobs:
   self-test:
-    name: Run MigrationGuard Action on Fixtures
+    name: Run Aperture Action on Fixtures
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

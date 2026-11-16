@@ -1,1 +1,1 @@
-"""Unit and integration tests for MigrationGuard."""
+"""Unit and integration tests for Aperture."""

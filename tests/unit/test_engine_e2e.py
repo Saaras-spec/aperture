@@ -2,9 +2,9 @@
 
 from pathlib import Path
 
-from migrationguard.config import Config, RuleConfig
-from migrationguard.engine import check_file, compute_exit_code
-from migrationguard.models import Severity
+from aperture.config import Config, RuleConfig
+from aperture.engine import check_file, compute_exit_code
+from aperture.models import Severity
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures"
 BAD_DIR = FIXTURES_DIR / "bad"
@@ -27,7 +27,7 @@ def test_e2e_bad_fixture_drop_table() -> None:
 def test_e2e_bad_fixture_with_inline_suppression(tmp_path: Path) -> None:
     """E2E: Suppressing a risky statement passes exit code with 0."""
     sql = """
-    -- migrationguard:ignore MG001 Removing legacy users table after migration to auth0
+    -- aperture:ignore MG001 Removing legacy users table after migration to auth0
     DROP TABLE users;
     """
     migration_file = tmp_path / "001_suppressed.sql"

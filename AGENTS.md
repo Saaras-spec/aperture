@@ -1,15 +1,15 @@
-You are a senior platform engineer. We are building "MigrationGuard": an open-source
+You are a senior platform engineer. We are building "Aperture": an open-source
 CLI and GitHub Action that scans PostgreSQL migration files in a pull request, detects
 risky operations, and reports findings with safe alternatives.
 
 GOAL
-Developers put .sql migration files in a repo. MigrationGuard finds the ones changed in
+Developers put .sql migration files in a repo. Aperture finds the ones changed in
 a PR, parses them with Postgres's real parser, runs a set of rules, and reports risks
 as a console report, a markdown PR comment, JSON, and SARIF. It exits non-zero if any
 finding at or above the configured fail severity exists.
 
 TECH STACK (do not substitute without asking me)
-- Python 3.11+, packaged with pyproject.toml, src/ layout, package name "migrationguard"
+- Python 3.11+, packaged with pyproject.toml, src/ layout, package name "aperture"
 - pglast for parsing SQL (do not use regex to detect risky statements)
 - Typer for the CLI, PyYAML + Pydantic v2 for config
 - pytest + pytest-cov for tests, ruff for lint/format, mypy (strict) for types
@@ -20,16 +20,16 @@ ARCHITECTURE (pipeline)
 input (git diff / paths) -> parser -> rule engine (+ config) -> findings -> reporters -> exit code
 
 REPO STRUCTURE (create exactly this)
-migrationguard/
-├── src/migrationguard/
+aperture/
+├── src/aperture/
 │   ├── __init__.py
 │   ├── cli.py              # Typer app: check, init, list-rules, explain
 │   ├── models.py           # Severity enum, Finding dataclass, StatementContext
 │   ├── parser.py           # pglast wrapper -> list of ParsedStatement (with line numbers)
 │   ├── engine.py           # runs enabled rules over statements, applies suppression + severity overrides
-│   ├── config.py           # Pydantic models + YAML loader (migrationguard.yml)
+│   ├── config.py           # Pydantic models + YAML loader (aperture.yml)
 │   ├── discovery.py        # find migration files: explicit paths, glob, or `git diff --name-only base...HEAD`
-│   ├── suppression.py      # parse "-- migrationguard:ignore <rule-id> <reason>" comments
+│   ├── suppression.py      # parse "-- aperture:ignore <rule-id> <reason>" comments
 │   ├── rules/
 │   │   ├── __init__.py     # registry: auto-discovers and registers all rules
 │   │   ├── base.py         # abstract Rule class
@@ -49,7 +49,7 @@ migrationguard/
 ├── action.yml              # GitHub Action (Docker-based)
 ├── Dockerfile
 ├── docs/design.md          # short design doc: problem, architecture, decisions, trade-offs
-├── examples/migrationguard.yml
+├── examples/aperture.yml
 ├── .github/workflows/ci.yml
 ├── pyproject.toml
 ├── LEARNING.md             # explain the code to me (see rules below)
@@ -62,9 +62,9 @@ CORE DESIGN RULES
 - Reporters only consume Findings. Rules never import reporters.
 - Adding a new rule must require adding exactly one file in rules/ (auto-registered).
 - Severity: INFO < WARNING < ERROR. Config has fail_on (default ERROR).
-- Config file migrationguard.yml: enable/disable rules, per-rule severity override,
+- Config file aperture.yml: enable/disable rules, per-rule severity override,
   fail_on, migration path globs, list of "large_tables" (rules may be stricter for these).
-- Inline suppression: a comment "-- migrationguard:ignore MG001 reason text" on the line
+- Inline suppression: a comment "-- aperture:ignore MG001 reason text" on the line
   above a statement suppresses that rule for that statement; reason is mandatory;
   suppressed findings are still reported as "suppressed" in JSON output.
 - Line numbers must be accurate: compute from statement byte offsets from pglast.

@@ -1,4 +1,4 @@
-"""Unit tests for MigrationGuard Typer CLI commands."""
+"""Unit tests for Aperture Typer CLI commands."""
 
 import json
 from pathlib import Path
@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from migrationguard.cli import app
+from aperture.cli import app
 
 runner = CliRunner()
 
@@ -52,16 +52,16 @@ def test_cli_init_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["init"])
     assert result.exit_code == 0
-    assert "Created migrationguard.yml successfully" in result.output
-    assert (tmp_path / "migrationguard.yml").exists()
-    content = (tmp_path / "migrationguard.yml").read_text(encoding="utf-8")
+    assert "Created aperture.yml successfully" in result.output
+    assert (tmp_path / "aperture.yml").exists()
+    content = (tmp_path / "aperture.yml").read_text(encoding="utf-8")
     assert "fail_on: ERROR" in content
 
 
 def test_cli_init_refuses_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify init refuses to overwrite existing config file and exits 2."""
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "migrationguard.yml").write_text("existing config", encoding="utf-8")
+    (tmp_path / "aperture.yml").write_text("existing config", encoding="utf-8")
     result = runner.invoke(app, ["init"])
     assert result.exit_code == 2
     assert "Refusing to overwrite" in result.output
@@ -106,8 +106,8 @@ def test_cli_check_format_markdown(tmp_path: Path) -> None:
 
     result = runner.invoke(app, ["check", str(migration), "--format", "markdown"])
     assert result.exit_code == 1
-    assert "<!-- migrationguard -->" in result.output
-    assert "## 🛡️ MigrationGuard Report" in result.output
+    assert "<!-- aperture -->" in result.output
+    assert "## 🛡️ Aperture Report" in result.output
 
 
 def test_cli_check_format_sarif(tmp_path: Path) -> None:

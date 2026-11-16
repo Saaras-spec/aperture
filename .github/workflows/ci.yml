@@ -35,7 +35,7 @@ jobs:
         run: mypy src tests
 
       - name: Run unit tests with pytest coverage
-        run: pytest --cov=src/migrationguard --cov-report=term-missing tests/unit
+        run: pytest --cov=src/aperture --cov-report=term-missing tests/unit
 
   docker:
     name: Docker Build & Verification
@@ -48,7 +48,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build Docker image
-        run: docker build -t migrationguard:local .
+        run: docker build -t aperture:local .
 
       - name: Verify CLI entrypoint in container
-        run: docker run --rm migrationguard:local --help
+        run: docker run --rm aperture:local --help

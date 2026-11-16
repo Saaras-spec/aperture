@@ -5,13 +5,13 @@ from typing import ClassVar
 
 import pytest
 
-from migrationguard.models import Finding, ParsedStatement, Severity, StatementContext
-from migrationguard.rules import (
+from aperture.models import Finding, ParsedStatement, Severity, StatementContext
+from aperture.rules import (
     discover_rules,
     get_all_rules,
     get_rule,
 )
-from migrationguard.rules.base import (
+from aperture.rules.base import (
     Rule,
     clear_rule_registry,
     get_registered_rules,

@@ -2,16 +2,16 @@
 
 from pathlib import Path
 
-from migrationguard.config import Config, RuleConfig
-from migrationguard.engine import (
+from aperture.config import Config, RuleConfig
+from aperture.engine import (
     check_file,
     check_files,
     check_sql_string,
     check_statements,
     compute_exit_code,
 )
-from migrationguard.models import Finding, Severity
-from migrationguard.parser import parse_sql_string
+from aperture.models import Finding, Severity
+from aperture.parser import parse_sql_string
 
 
 def test_engine_clean_sql() -> None:
@@ -65,7 +65,7 @@ def test_engine_severity_override() -> None:
 def test_engine_inline_suppression() -> None:
     """Verify inline suppression marks finding as suppressed and does not fail exit code."""
     sql = """
-    -- migrationguard:ignore MG001 Dropping legacy table in maintenance window
+    -- aperture:ignore MG001 Dropping legacy table in maintenance window
     DROP TABLE users;
     """
     config = Config(fail_on=Severity.ERROR)
@@ -81,7 +81,7 @@ def test_engine_inline_suppression() -> None:
 def test_engine_inline_suppression_missing_reason() -> None:
     """Verify missing reason in suppression produces MG000 and leaves rule unsuppressed."""
     sql = """
-    -- migrationguard:ignore MG001
+    -- aperture:ignore MG001
     DROP TABLE users;
     """
     config = Config(fail_on=Severity.WARNING)
