@@ -609,5 +609,164 @@ This distinction prevents CI pipelines from confusing a broken config or syntax 
 #### Q5: Why does `migrationguard init` refuse to overwrite existing configuration files?
 **Answer:** Safe defaults protect user data. If a developer accidentally runs `migrationguard init` inside an established project with custom table exemptions and rule severity overrides, silently overwriting `migrationguard.yml` would erase their customized configuration. Refusing to overwrite and returning an error code forces intentionality.
 
+---
+
+## Phase 5: Containerization, GitHub Actions, Automated PR Comments & CI/CD
+
+### 1. Files Created/Completed and What Each Does
+
+- **`Dockerfile`**:
+  - Production-ready, security-hardened container based on `python:3.12-slim`.
+  - Creates a dedicated non-root user and group (`appuser`, UID 1000) and switches to it.
+  - Installs `migrationguard` and configures `ENTRYPOINT ["migrationguard"]` for direct CLI usage.
+- **`action.yml`**:
+  - Docker-based GitHub Action specification declaring inputs (`config`, `base-ref`, `fail-on`, `github-token`, `comment-on-pr`) and outputs (`findings-count`, `passed`).
+  - Mounts repository code into the container and invokes `/app/entrypoint.sh`.
+- **`src/migrationguard/github_comment.py`**:
+  - Connects to GitHub's REST API (`/repos/{owner}/{repo}/issues/{pr}/comments`).
+  - Searches existing comments for the unique tracking marker `<!-- migrationguard -->`.
+  - Uses `PATCH` to update existing comments or `POST` to create a new comment if none exists.
+  - Enforces strict token privacy: tokens are never printed, logged, or included in error messages.
+- **`src/migrationguard/action_runner.py` & `entrypoint.sh`**:
+  - The bridge between GitHub Actions and MigrationGuard: parses `INPUT_*` environment variables, executes migration scanning, writes outputs to `$GITHUB_OUTPUT`, prints reports, and posts PR comments.
+- **`.github/workflows/ci.yml`**:
+  - Continuous Integration pipeline testing every push and PR: runs `ruff` lint and format checks, `mypy` strict type checking, `pytest` unit test suite with coverage, and verifies Docker image builds.
+- **`.github/workflows/self-test.yml`**:
+  - Automated integration testing for the GitHub Action itself: executes against `tests/fixtures/good/` (verifying success) and `tests/fixtures/bad/` (verifying failure detection).
+- **`docs/design.md`**:
+  - Full system design document detailing problem statement, architectural pipeline, and design trade-offs.
+- **`README.md`**:
+  - Complete user-facing documentation covering quick start, CLI commands, GitHub Action configuration, rules catalog, and inline suppressions.
+- **Unit Tests**:
+  - `tests/unit/test_github_comment.py`: Fully mocked HTTP tests verifying comment discovery, creation, updates, and token sanitization.
+  - `tests/unit/test_action_runner.py`: Tests action inputs, outputs, and PR commenting logic.
+
+---
+
+### 2. How Data Flows Between Them
+
+```
+Developer opens / updates a Pull Request
+                    │
+                    ▼
+       [ GitHub Action: action.yml ] ──(Docker: python:3.12-slim)
+                    │
+                    ▼
+       [ action_runner.py / entrypoint.sh ]
+                    │
+                    ├───────────────────────────────┐
+                    ▼                               ▼
+       [ discover_files() ]               [ load_config() ]
+       (git diff origin/main...HEAD)       (migrationguard.yml)
+                    │                               │
+                    └───────────────┬───────────────┘
+                                    │
+                                    ▼
+                        [ check_files() ]
+                                    │
+                                    ▼
+                            List of Findings
+                                    │
+                    ┌───────────────┴───────────────┐
+                    ▼                               ▼
+          Writes $GITHUB_OUTPUT             [ github_comment.py ]
+        findings-count=X, passed=bool       Finds <!-- migrationguard -->
+                    │                       Updates or posts PR comment
+                    ▼                               │
+          Console Log Output                        ▼
+                    │                       GitHub PR Comment Updated!
+                    ▼
+          Exit Code (0 or 1)
+```
+
+---
+
+### 3. Key Python Concepts Used
+
+#### Concept 1: REST API Requests via Standard Library (`urllib.request`)
+Using `urllib.request` allows performing authenticated HTTP calls without introducing third-party runtime dependencies like `requests` or `httpx`, keeping the Docker image and package footprint lean.
+
+```python
+import json
+import urllib.request
+
+req = urllib.request.Request(
+    "https://api.github.com/repos/owner/repo/issues/1/comments",
+    data=json.dumps({"body": "Hello"}).encode("utf-8"),
+    headers={"Authorization": "Bearer token", "Content-Type": "application/json"},
+    method="POST",
+)
+with urllib.request.urlopen(req) as resp:
+    data = json.loads(resp.read().decode("utf-8"))
+```
+
+#### Concept 2: Mocking Network I/O in Unit Tests (`monkeypatch.setattr`)
+Unit tests must never depend on live external network services. By mocking `urllib.request.urlopen`, tests run instantaneously and deterministically offline.
+
+```python
+import urllib.request
+import pytest
+
+
+def test_api(monkeypatch: pytest.MonkeyPatch):
+    class FakeResponse:
+        def read(self):
+            return b'{"id": 123}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req: FakeResponse())
+```
+
+#### Concept 3: GitHub Actions Step Outputs Contract (`$GITHUB_OUTPUT`)
+GitHub Actions uses an environment file pointed to by `$GITHUB_OUTPUT`. Steps write output variables by appending `key=value\n` to this file, making them available to downstream workflow steps.
+
+```python
+import os
+
+output_file = os.getenv("GITHUB_OUTPUT")
+if output_file:
+    with open(output_file, "a", encoding="utf-8") as f:
+        f.write("passed=true\n")
+```
+
+#### Concept 4: Credential Masking in Exceptions
+When interacting with security tokens, exception handlers must never include raw authorization headers or sensitive inputs in error strings, logs, or tracebacks.
+
+```python
+try:
+    make_api_call(token)
+except Exception as err:
+    # Safely communicate failure without leaking the secret token!
+    raise RuntimeError("API request failed due to authentication error.") from None
+```
+
+---
+
+### 4. Design Decisions & Interview Questions
+
+#### Q1: Why use Python's standard library `urllib.request` instead of `requests` or `httpx` for PR commenting?
+**Answer:** Minimizing runtime dependencies is a core platform engineering best practice. Adding `requests` or `httpx` introduces transitive dependencies (e.g., `certifi`, `idna`, `charset-normalizer`, `anyio`), increasing attack surface, Docker image build times, and supply chain vulnerability risks. Because GitHub comment management requires only two simple endpoints (`GET` and `POST`/`PATCH`), Python's built-in `urllib.request` handles the task cleanly with zero extra dependencies.
+
+#### Q2: Why run as a dedicated non-root user (`USER appuser`) in the Dockerfile?
+**Answer:** Running containers as `root` (UID 0) is a major container security risk. If a container breakout vulnerability occurs, a root process inside the container can gain root privileges on the underlying host system. Creating `appuser` (UID 1000) and switching to it adheres to the Principle of Least Privilege, preventing unauthorized filesystem modifications on the host.
+
+#### Q3: Why post or update a single PR comment using `<!-- migrationguard -->` rather than creating a new comment on every commit?
+**Answer:** Pull requests often receive many commits during code review. If CI posted a new comment for every push, the PR discussion would be flooded with spam, drowning out reviewer feedback. By prefixing the comment with a hidden HTML comment marker `<!-- migrationguard -->`, subsequent CI runs locate the existing comment and update it in-place via `PATCH`, keeping the PR thread clean.
+
+#### Q4: How does the self-test workflow verify the GitHub Action without infinite recursion?
+**Answer:** The self-test workflow (`.github/workflows/self-test.yml`) tests the action locally using `uses: ./` on Ubuntu runners. It tests two explicit cases:
+1. Running against `tests/fixtures/good/` and asserting `outcome == 'success'`.
+2. Running against `tests/fixtures/bad/` with `continue-on-error: true` and asserting `outcome == 'failure'`.
+Testing both positive and negative cases guarantees the action fails when risky migrations are present and succeeds when migrations are safe.
+
+#### Q5: Why does the Docker container use `python:3.12-slim` instead of Alpine Linux?
+**Answer:** While Alpine Linux creates smaller raw base images, it uses `musl libc` instead of `glibc`. Python packages that contain C extensions (such as `pglast`, which compiles PostgreSQL's C parser) must compile from source on Alpine, requiring build tools (`gcc`, `make`, `musl-dev`) that bloat the build time and final image. Debian-based `python:3.12-slim` uses `glibc` and supports pre-compiled `manylinux` binary wheels, making `pip install` instantaneous.
+
+
 
 
