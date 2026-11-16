@@ -904,10 +904,10 @@ print(f"Installed aperture-db version: {pkg_version}")
 - **`src/aperture/explainer.py`**:
   - `ExplainerProvider`: A `typing.Protocol` establishing the structural interface for any AI explanation provider.
   - `build_explanation_prompt`: Prompter that wraps untrusted SQL inside `<untrusted_sql>` tags with strict directives ordering the LLM to treat the content solely as passive text and ignore adversarial instructions.
-  - `AnthropicProvider`: HTTP client for Anthropic Messages API (`claude-3-5-haiku-latest`).
-  - `GeminiProvider`: HTTP client for Google Gemini REST API (`gemini-1.5-flash`).
+  - `AnthropicProvider`: HTTP client for Anthropic Messages API (`claude-haiku-5-5`).
+  - `GeminiProvider`: HTTP client for Google Gemini REST API (`gemini-2.5-flash`).
   - `resolve_provider`: Resolves and instantiates the chosen or auto-detected provider based on `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`.
-  - `enrich_findings_with_explanations`: Main orchestrator that applies cost caps, filters to `ERROR` and `WARNING` severities, and falls back silently on failures or timeouts.
+  - `enrich_findings_with_explanations`: Main orchestrator that applies cost caps, filters to `ERROR` and `WARNING` severities, prints a single diagnostic warning to stderr if explanations cannot be produced without leaking secrets, and falls back silently on failures or timeouts.
 - **`src/aperture/models.py`**: Added optional `explanation: str | None = None` to the `Finding` dataclass.
 - **`src/aperture/config.py`**: Added `explain_provider`, `explain_model`, `explain_max_findings` (default 10), and `explain_timeout_seconds` (default 10.0s) to `Config`.
 - **`src/aperture/reporters/`**:

@@ -114,13 +114,52 @@ aperture check --explain
 - **Invariant Exit Codes**: The AI explainer never alters which findings exist, the pass/fail determination, or process exit codes.
 - **Untrusted Input Isolation**: SQL text is wrapped in strict `<untrusted_sql>` delimiters, and the model is instructed to treat all contents solely as passive data and ignore embedded prompt injection attempts.
 - **Cost Controls**: Explanations are restricted to `ERROR` and `WARNING` severities and capped at a configurable limit (default: 10 per run).
+- **Default & Configurable Models**:
+  - Anthropic default: `claude-haiku-5-5`
+  - Google Gemini default: `gemini-2.5-flash` (Google's official recommended Flash model)
+  - Both models can be customized in `aperture.yml`.
 - **Custom Configuration (`aperture.yml`)**:
   ```yaml
-  explain_provider: anthropic           # 'anthropic' or 'gemini' (default: auto-detect)
-  explain_model: claude-3-5-haiku-latest # or 'gemini-1.5-flash'
-  explain_max_findings: 10              # Maximum findings to explain per run
-  explain_timeout_seconds: 10.0         # HTTP request timeout
+  explain_provider: anthropic   # 'anthropic' or 'gemini' (default: auto-detect)
+  explain_model: claude-haiku-5-5 # or 'gemini-2.5-flash'
+  explain_max_findings: 10      # Maximum findings to explain per run
+  explain_timeout_seconds: 10.0 # HTTP request timeout
   ```
+
+### 🧪 Verifying `--explain`
+
+Follow these exact steps to verify the AI explainer with a real key:
+
+1. **Set your API key**:
+   ```bash
+   # For Anthropic Claude
+   export ANTHROPIC_API_KEY="sk-ant-..."
+
+   # Or for Google Gemini
+   export GEMINI_API_KEY="AIzaSy..."
+   ```
+
+2. **Run `aperture check` with `--explain`**:
+   ```bash
+   aperture check demo/db/migrations/002_unsafe.sql --explain
+   ```
+
+3. **Observe the enriched output**:
+   - Aperture flags `MG001` (`DROP COLUMN`) and `MG005` (`CREATE INDEX` without `CONCURRENTLY`).
+   - Alongside the built-in recommendation, each finding displays a dedicated `🤖 AI-generated explanation:` section with a plain-English explanation and a step-by-step safe migration plan.
+   - The exit code remains `1` (reflecting detected policy violations).
+
+4. **Test silent fallback & stderr diagnostic warning**:
+   Unset your API key and run again:
+   ```bash
+   unset ANTHROPIC_API_KEY GEMINI_API_KEY
+   aperture check demo/db/migrations/002_unsafe.sql --explain
+   ```
+   Aperture prints one short diagnostic line to `stderr`:
+   ```text
+   aperture: AI explanation unavailable (no ANTHROPIC_API_KEY or GEMINI_API_KEY set)
+   ```
+   The findings and built-in suggestions are displayed normally to `stdout`, and the exit code remains `1`.
 
 ---
 
