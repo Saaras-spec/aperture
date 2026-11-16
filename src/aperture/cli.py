@@ -214,6 +214,13 @@ def check(
             help="Write report output to specified file path instead of stdout.",
         ),
     ] = None,
+    explain: Annotated[
+        bool,
+        typer.Option(
+            "--explain",
+            help="Generate AI-powered plain-English risk explanations and migration plans.",
+        ),
+    ] = False,
 ) -> None:
     """Scan PostgreSQL migration files for risky operations and policy violations."""
     # 1. Load configuration
@@ -245,6 +252,12 @@ def check(
     except ParseError as err:
         typer.secho(f"SQL parse error:\n{err}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from None
+
+    # Optional AI explanation enrichment
+    if explain:
+        from aperture.explainer import enrich_findings_with_explanations
+
+        findings = enrich_findings_with_explanations(findings, cfg)
 
     # 4. Render report
     try:
