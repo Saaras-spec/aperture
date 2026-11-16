@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import urllib.error
 import urllib.request
 from typing import Protocol
 
@@ -86,7 +88,7 @@ class AnthropicProvider:
     def __init__(
         self,
         api_key: str,
-        model: str = "claude-3-5-haiku-latest",
+        model: str = "claude-haiku-5-5",
         timeout: float = 10.0,
     ) -> None:
         self._api_key = api_key
@@ -142,7 +144,7 @@ class GeminiProvider:
     def __init__(
         self,
         api_key: str,
-        model: str = "gemini-1.5-flash",
+        model: str = "gemini-2.5-flash",
         timeout: float = 10.0,
     ) -> None:
         self._api_key = api_key
@@ -200,11 +202,13 @@ class GeminiProvider:
         return ""
 
 
-def resolve_provider(config: Config) -> ExplainerProvider | None:
+def resolve_provider(config: Config) -> tuple[ExplainerProvider | None, str | None]:
     """Resolve and instantiate the configured or auto-detected explanation provider.
 
-    Returns None if no API key is present or provider cannot be initialized.
-    Never prints, logs, or reports the API keys.
+    Returns:
+        A tuple of (provider, failure_reason). If provider cannot be initialized,
+        failure_reason contains a safe explanation (e.g. 'no ANTHROPIC_API_KEY set').
+        Never prints, logs, or reports the API keys.
     """
     provider_name = (config.explain_provider or "").lower().strip()
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
@@ -212,42 +216,54 @@ def resolve_provider(config: Config) -> ExplainerProvider | None:
 
     if provider_name == "anthropic":
         if not anthropic_key:
-            return None
-        model = config.explain_model or "claude-3-5-haiku-latest"
-        return AnthropicProvider(
-            api_key=anthropic_key,
-            model=model,
-            timeout=config.explain_timeout_seconds,
+            return None, "no ANTHROPIC_API_KEY set"
+        model = config.explain_model or "claude-haiku-5-5"
+        return (
+            AnthropicProvider(
+                api_key=anthropic_key,
+                model=model,
+                timeout=config.explain_timeout_seconds,
+            ),
+            None,
         )
 
     if provider_name == "gemini":
         if not gemini_key:
-            return None
-        model = config.explain_model or "gemini-1.5-flash"
-        return GeminiProvider(
-            api_key=gemini_key,
-            model=model,
-            timeout=config.explain_timeout_seconds,
+            return None, "no GEMINI_API_KEY set"
+        model = config.explain_model or "gemini-2.5-flash"
+        return (
+            GeminiProvider(
+                api_key=gemini_key,
+                model=model,
+                timeout=config.explain_timeout_seconds,
+            ),
+            None,
         )
 
     # Auto-detection when explain_provider is None or empty:
     if anthropic_key:
-        model = config.explain_model or "claude-3-5-haiku-latest"
-        return AnthropicProvider(
-            api_key=anthropic_key,
-            model=model,
-            timeout=config.explain_timeout_seconds,
+        model = config.explain_model or "claude-haiku-5-5"
+        return (
+            AnthropicProvider(
+                api_key=anthropic_key,
+                model=model,
+                timeout=config.explain_timeout_seconds,
+            ),
+            None,
         )
 
     if gemini_key:
-        model = config.explain_model or "gemini-1.5-flash"
-        return GeminiProvider(
-            api_key=gemini_key,
-            model=model,
-            timeout=config.explain_timeout_seconds,
+        model = config.explain_model or "gemini-2.5-flash"
+        return (
+            GeminiProvider(
+                api_key=gemini_key,
+                model=model,
+                timeout=config.explain_timeout_seconds,
+            ),
+            None,
         )
 
-    return None
+    return None, "no ANTHROPIC_API_KEY or GEMINI_API_KEY set"
 
 
 def enrich_findings_with_explanations(
@@ -260,21 +276,26 @@ def enrich_findings_with_explanations(
     Rules:
     - Only explain ERROR and WARNING findings (skips INFO and suppressed).
     - Capped to config.explain_max_findings per run (default 10).
-    - Falls back silently on any failure or timeout (leaves finding.explanation=None).
-    - Never changes findings count or pass/fail result.
+    - If explanations could not be produced, prints ONE short warning line to stderr.
+    - Never prints API keys or raw response bodies.
+    - Never changes findings count or pass/fail exit code.
     """
-    if provider is None:
-        provider = resolve_provider(config)
-
-    if provider is None:
+    eligible = [
+        f for f in findings if not f.suppressed and f.severity in (Severity.ERROR, Severity.WARNING)
+    ]
+    if not eligible:
         return findings
 
+    last_error_reason: str | None = None
+
+    if provider is None:
+        provider, resolve_error = resolve_provider(config)
+        if provider is None:
+            sys.stderr.write(f"aperture: AI explanation unavailable ({resolve_error})\n")
+            return findings
+
     explained_count = 0
-    for finding in findings:
-        if finding.suppressed:
-            continue
-        if finding.severity not in (Severity.ERROR, Severity.WARNING):
-            continue
+    for finding in eligible:
         if explained_count >= config.explain_max_findings:
             break
 
@@ -289,8 +310,21 @@ def enrich_findings_with_explanations(
             if exp and exp.strip():
                 finding.explanation = exp.strip()
                 explained_count += 1
+            else:
+                last_error_reason = "empty response from provider"
+        except urllib.error.HTTPError as err:
+            last_error_reason = f"HTTP {err.code}: {err.reason}"
+        except TimeoutError:
+            last_error_reason = "request timed out"
+        except urllib.error.URLError as err:
+            if "timed out" in str(err).lower():
+                last_error_reason = "request timed out"
+            else:
+                last_error_reason = "network connection error"
         except Exception:
-            # Silent fallback: keep built-in suggestion and exit code unchanged
-            continue
+            last_error_reason = "provider error"
+
+    if explained_count == 0 and last_error_reason:
+        sys.stderr.write(f"aperture: AI explanation unavailable ({last_error_reason})\n")
 
     return findings

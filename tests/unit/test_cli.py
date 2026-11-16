@@ -198,3 +198,4 @@ def test_cli_check_with_explain_flag_fallback_without_keys(
     assert result.exit_code == 1
     assert "MG001" in result.output
     assert "Dropping column 'email'" in result.output
+    assert "aperture: AI explanation unavailable" in result.output

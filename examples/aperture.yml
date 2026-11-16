@@ -75,6 +75,6 @@ rules:
 # Provider to use: 'anthropic' or 'gemini'. Default: auto-detect from environment keys.
 # API keys are read strictly from ANTHROPIC_API_KEY or GEMINI_API_KEY environment variables.
 # explain_provider: anthropic
-# explain_model: claude-3-5-haiku-latest
+# explain_model: claude-haiku-5-5 # default for anthropic; for gemini use 'gemini-2.5-flash'
 # explain_max_findings: 10
 # explain_timeout_seconds: 10.0
