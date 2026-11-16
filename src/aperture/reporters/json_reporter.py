@@ -37,6 +37,7 @@ def format_json(findings: list[Finding], indent: int = 2) -> str:
             "statement_sql": f.statement_sql,
             "suppressed": f.suppressed,
             "suppression_reason": f.suppression_reason,
+            "explanation": f.explanation,
         }
         for f in findings
     ]

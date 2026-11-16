@@ -92,6 +92,19 @@ def format_console(
                 if s_line.strip():
                     lines.append(f"     💡 {s_line.strip()}")
 
+            # AI-generated explanation
+            if finding.explanation:
+                lines.append(
+                    typer.style(
+                        "     🤖 AI-generated explanation:",
+                        fg=typer.colors.CYAN,
+                        bold=True,
+                    )
+                )
+                for exp_line in finding.explanation.splitlines():
+                    if exp_line.strip():
+                        lines.append(f"        {exp_line.strip()}")
+
             lines.append("")
 
     # Summary line

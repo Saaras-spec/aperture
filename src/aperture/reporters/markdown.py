@@ -95,6 +95,10 @@ def format_markdown(findings: list[Finding]) -> str:
         for sug_line in f.suggestion.splitlines():
             lines.append(f"> {sug_line}")
 
+        if f.explanation:
+            lines.append("\n**🤖 AI-generated explanation:**\n")
+            lines.append(f.explanation.strip())
+
         lines.append("\n</details>\n")
 
     return "\n".join(lines)
