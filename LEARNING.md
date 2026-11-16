@@ -326,3 +326,158 @@ has_not_null = any(getattr(c, "contype", None) == "CONSTR_NOTNULL" for c in cons
 2. **Programmatic unit tests (`tests/unit/test_rules.py`)**: Exercise specific AST edge cases, such as multiple statements, case insensitivity, newly created tables in the same file, missing clauses, and safe alternative patterns.
 Together, they ensure 96%+ test coverage and protect against regressions.
 
+---
+
+## Phase 3: Configuration, Inline Suppression, File Discovery & Rule Engine
+
+### 1. Files Created/Completed and What Each Does
+
+- **`src/migrationguard/config.py`**:
+  - `Config`, `RuleConfig`: Pydantic v2 models validating configuration settings (`fail_on`, `migration_paths`, `large_tables`, and `rules`). Extra fields are strictly forbidden (`extra="forbid"`) to catch typos.
+  - `load_config`, `load_config_from_yaml`: Parses YAML files via PyYAML, validates data schemas, and formats helpful error messages that explicitly name offending fields. Automatically discovers `migrationguard.yml` in the current working directory.
+- **`src/migrationguard/suppression.py`**:
+  - `parse_suppressions`: Scans statement comments for inline suppression directives in the format `-- migrationguard:ignore <RULE_ID> <reason>`.
+  - Enforces mandatory justification: if an ignore directive omits a reason, it emits an `MG000` finding (severity `WARNING`) and refuses to suppress the rule.
+- **`src/migrationguard/engine.py`**:
+  - `check_statements`, `check_file`, `check_files`: The pipeline coordinator that takes parsed statements and configuration, evaluates active rules, applies per-rule severity overrides, and tags suppressed findings (`suppressed=True`, `suppression_reason=...`).
+  - `compute_exit_code`: Determines CLI exit status (0 for clean pass or only suppressed findings, 1 if any unsuppressed finding meets or exceeds the `fail_on` threshold).
+- **`src/migrationguard/discovery.py`**:
+  - `discover_files`: Unified file locator supporting three discovery modes: explicit file/directory paths, `git diff --name-only <base>...HEAD`, and glob patterns from configuration.
+  - Filters strictly for existing `.sql` files and provides helpful diagnostic errors when `git` is missing or an invalid base ref is given.
+- **`examples/migrationguard.yml`**:
+  - A reference configuration template explaining every configurable setting (`fail_on`, `migration_paths`, `large_tables`, per-rule overrides).
+- **Unit & End-to-End Tests**:
+  - `tests/unit/test_config.py`: Tests default values, YAML parsing, invalid severities, bad fields, and fallback discovery.
+  - `tests/unit/test_suppression.py`: Tests single, multiple, block comment suppressions, and missing-reason `MG000` warnings.
+  - `tests/unit/test_engine.py`: Tests rule filtering, severity overrides, inline suppressions, and exit code logic.
+  - `tests/unit/test_discovery.py`: Tests path discovery, glob matching, git diff parsing, and error handling.
+  - `tests/unit/test_engine_e2e.py`: End-to-end integration tests running rules against fixtures and verifying exit codes.
+
+---
+
+### 2. How Data Flows Between Them
+
+```
+CLI / Input Args (Paths, globs, or git diff base)
+                 │
+                 ▼
+     [ discovery.py: discover_files() ]
+                 │
+                 ▼  List of Path objects (.sql files)
+     [ parser.py: parse_sql_file() ]
+                 │
+                 ▼  List of ParsedStatement objects (AST nodes + comments)
+     [ suppression.py: parse_suppressions() ]
+                 │
+                 ├──────────────────────────────┐
+                 ▼                              ▼
+          suppressions map                MG000 findings
+        (rule_id -> reason)           (missing reasons warning)
+                 │                              │
+                 ▼                              │
+     [ config.py: Config ]                      │
+     (Active rules, severity overrides)         │
+                 │                              │
+                 ▼                              ▼
+     [ engine.py: check_statements() ] ◄────────┘
+                 │
+                 ▼  Applies severity overrides & tags suppressed=True
+         List of Finding objects
+                 │
+                 ▼
+     [ engine.py: compute_exit_code(findings, fail_on) ]
+                 │
+                 ▼
+         Exit Code: 0 (Pass) or 1 (Fail)
+```
+
+---
+
+### 3. Key Python Concepts Used
+
+#### Concept 1: Pydantic v2 Models & Field Validators (`@field_validator`)
+Pydantic v2 allows defining strongly typed, validated configuration schemas. Field validators intercept raw input (like case-insensitive severity strings like `"error"` or `"warning"`) and validate or coerce them before constructing the model.
+
+```python
+from pydantic import BaseModel, field_validator
+
+
+class Settings(BaseModel):
+    fail_on: str
+
+    @field_validator("fail_on", mode="before")
+    @classmethod
+    def normalize_severity(cls, v: str) -> str:
+        v_upper = v.upper()
+        if v_upper not in ("INFO", "WARNING", "ERROR"):
+            raise ValueError(f"Invalid level '{v}'")
+        return v_upper
+```
+
+#### Concept 2: Forbidding Extra Configuration Keys (`extra = "forbid"`)
+By default, Pydantic ignores extra keys in input dictionaries. In configuration files, typos like `fail_upon: ERROR` would be silently ignored, causing unexpected behavior. Setting `extra="forbid"` ensures that any misspelled option immediately halts with a descriptive error.
+
+```python
+from pydantic import BaseModel
+
+
+class Config(BaseModel):
+    model_config = {"extra": "forbid"}
+    fail_on: str = "ERROR"
+
+
+# Config(fail_upon="WARNING") raises ValidationError immediately!
+```
+
+#### Concept 3: Subprocess Execution with Output Capture (`subprocess.run`)
+When integrating with command-line tools like `git diff`, Python's `subprocess.run` provides safe process invocation without shell injection risks. Setting `capture_output=True` and `text=True` automatically captures `stdout` and `stderr` as Python strings.
+
+```python
+import subprocess
+
+proc = subprocess.run(
+    ["git", "diff", "--name-only", "main...HEAD"],
+    capture_output=True,
+    text=True,
+    check=False,
+)
+if proc.returncode == 0:
+    changed_files = proc.stdout.splitlines()
+```
+
+#### Concept 4: Regular Expression Named Capture Groups (`(?P<name>...)`)
+Named capture groups make regular expressions readable and maintainable by allowing you to extract matched substrings by descriptive names instead of numeric indices (`match.group("rule_id")`).
+
+```python
+import re
+
+pattern = re.compile(r"-- migrationguard:ignore\s+(?P<rule_id>\w+)\s+(?P<reason>.+)")
+match = pattern.match("-- migrationguard:ignore MG001 Dropping legacy table")
+if match:
+    print(match.group("rule_id"))  # "MG001"
+    print(match.group("reason"))  # "Dropping legacy table"
+```
+
+---
+
+### 4. Design Decisions & Interview Questions
+
+#### Q1: Why is an inline suppression reason mandatory, producing an `MG000` finding when missing?
+**Answer:** In production engineering, suppressing a safety check without documenting *why* creates hidden technical debt and defeats the purpose of automated guardrails. By requiring a mandatory explanation, teams ensure an audit trail directly in the SQL file (e.g. "Dropping legacy column after verifying zero app queries in release v2.4"). If an engineer simply writes `-- migrationguard:ignore MG001`, MigrationGuard refuses to suppress the rule and flags an `MG000` warning, enforcing team accountability.
+
+#### Q2: Why does `compute_exit_code` ignore suppressed findings even if their severity exceeds `fail_on`?
+**Answer:** Suppressed findings represent deliberate, DBA-reviewed exceptions to safety rules. If suppressed findings still triggered a non-zero exit code, developers would have no way to merge intentional migrations without altering global CI settings. However, suppressed findings are still included in the final report (marked with `suppressed=True` and their reason) so that pull request reviewers and auditors have full visibility into every exception granted.
+
+#### Q3: Why support both explicit file paths, config globs, and `git diff` for file discovery?
+**Answer:** Different operating contexts require different discovery modes:
+1. **Local CLI (`migrationguard check path/to/001.sql`)**: Engineers developing a single new migration want to test only that specific file.
+2. **Pre-commit / CI on PRs (`git diff --name-only origin/main...HEAD`)**: In a large repository with hundreds of historical migrations, re-analyzing old migrations on every commit is slow and noisy; scanning only the changed files in the PR ensures fast, targeted feedback.
+3. **Full audit / Scheduled scans (`config.migration_paths`)**: Teams auditing their whole codebase need glob discovery to find all migrations across all microservice directories.
+
+#### Q4: Why forbid unknown/extra fields in the configuration schema?
+**Answer:** Configuration errors frequently happen due to subtle typos—such as writing `rules_override` instead of `rules`, or `failon` instead of `fail_on`. If a parser silently ignores unrecognized fields, developers believe their configuration is active when it is actually doing nothing. By enforcing `extra="forbid"` in Pydantic, MigrationGuard fails fast with a clear error pointing out the exact unrecognized field name.
+
+#### Q5: Why does `engine.py` decouple rule execution from exit code computation and reporting?
+**Answer:** In the MigrationGuard architecture, `check_statements()` is a pure domain function: it takes parsed statements and configuration, evaluates rules, and returns plain `Finding` data objects. `compute_exit_code()` is a separate calculation that determines process status. Separating execution from exit code computation allows the same engine to be used by the CLI (which exits 0 or 1), a GitHub Action (which might annotate PRs without failing the build), or a Python API/library without coupling the core analysis to OS process termination.
+
+
