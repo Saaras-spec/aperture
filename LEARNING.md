@@ -480,4 +480,134 @@ if match:
 #### Q5: Why does `engine.py` decouple rule execution from exit code computation and reporting?
 **Answer:** In the MigrationGuard architecture, `check_statements()` is a pure domain function: it takes parsed statements and configuration, evaluates rules, and returns plain `Finding` data objects. `compute_exit_code()` is a separate calculation that determines process status. Separating execution from exit code computation allows the same engine to be used by the CLI (which exits 0 or 1), a GitHub Action (which might annotate PRs without failing the build), or a Python API/library without coupling the core analysis to OS process termination.
 
+---
+
+## Phase 4: CLI Application & Multi-Format Reporters
+
+### 1. Files Created/Completed and What Each Does
+
+- **`src/migrationguard/cli.py`**:
+  - Full-featured command-line application built with Typer exposing four user commands:
+    - `check`: Scans migration files via explicit paths, `git diff` against a base ref, or config globs. Evaluates rules, renders formatted reports, writes to stdout or file, and exits with 0 (clean pass), 1 (violations at or above `fail_on`), or 2 (bad configuration, invalid options, or SQL parse errors).
+    - `list-rules`: Displays a clean catalog table of all registered rules, default severities, and descriptions.
+    - `init`: Generates a starter `migrationguard.yml` configuration file with sensible defaults, refusing to overwrite if one already exists.
+    - `explain <rule_id>`: Shows in-depth educational details for a rule: description, why the Postgres operation is dangerous (locks, table rewrites, connection pool stalls), and concrete safe alternatives.
+- **`src/migrationguard/reporters/`**:
+  - `__init__.py`: Provides `render_report()`, a single polymorphic dispatch interface that takes findings and a format string (`console`, `markdown`, `json`, `sarif`) and delegates to the appropriate formatter.
+  - `console.py`: Colorized terminal reporter that groups findings by file with line numbers, severity badges (`[ERROR]`, `[WARNING]`, `[INFO]`, `[SUPPRESSED]`), statement SQL snippets, safe suggestions, and summary statistics.
+  - `markdown.py`: PR comment reporter starting with the hidden marker `<!-- migrationguard -->`, featuring a summary table, status badge, and collapsible `<details>` blocks for each finding.
+  - `json_reporter.py`: Machine-readable JSON output containing full finding attributes and summary counts.
+  - `sarif.py`: Generates OASIS SARIF 2.1.0 output compatible with GitHub Code Scanning, complete with driver rule metadata, file URIs, line numbers, and in-source suppressions.
+- **Unit & Snapshot Tests**:
+  - `tests/unit/test_reporters.py`: Snapshot tests for all four reporters, validating markdown hidden markers, JSON summaries, and full SARIF 2.1.0 schema compliance.
+  - `tests/unit/test_cli.py`: End-to-end CLI tests using Typer's `CliRunner` validating all commands, options (`--config`, `--base-ref`, `--format`, `--output`), and exit codes (0, 1, 2).
+
+---
+
+### 2. How Data Flows Between Them
+
+```
+User runs CLI: migrationguard check --format markdown --output pr_comment.md
+                                   │
+                                   ▼
+ [ cli.py: check() ] ──> Loads config.py & discovers files via discovery.py
+                                   │
+                                   ▼
+ [ engine.py: check_files() ] ──> Evaluates rules across all migration statements
+                                   │
+                                   ▼
+ List of [ Finding ] ──> [ reporters: render_report(findings, "markdown") ]
+                                   │
+                                   ├──────────────────────────────┐
+                                   ▼                              ▼
+                 Writes to file or stdout             [ compute_exit_code() ]
+                 (e.g. pr_comment.md)                 Evaluates fail_on threshold
+                                                                  │
+                                                                  ▼
+                                                      Process Exit Code (0, 1, 2)
+```
+
+---
+
+### 3. Key Python Concepts Used
+
+#### Concept 1: Modern Type Annotations with `typing.Annotated`
+In modern Python CLI libraries like Typer and FastAPI, `Annotated[T, Metadata]` allows separating the Python data type (`list[Path] | None`) from framework metadata (`typer.Argument(...)` or `typer.Option(...)`). This avoids function default value evaluation issues while keeping type checkers happy.
+
+```python
+from pathlib import Path
+from typing import Annotated
+import typer
+
+
+def run(
+    path: Annotated[Path, typer.Argument(help="File path to process")],
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    pass
+```
+
+#### Concept 2: CLI Testing with Isolated Runner (`typer.testing.CliRunner`)
+`CliRunner` allows invoking command-line apps programmatically inside unit tests without spawning external subprocesses. It captures `stdout`, `stderr`, and the exit code directly.
+
+```python
+from typer.testing import CliRunner
+
+runner = CliRunner()
+result = runner.invoke(app, ["explain", "MG001"])
+assert result.exit_code == 0
+assert "DROP TABLE" in result.output
+```
+
+#### Concept 3: Polymorphic Dispatch via Factory Function (`render_report`)
+Instead of cluttering CLI logic with `if format == "json": ... elif format == "sarif": ...`, the reporters package encapsulates all formatting strategies behind a single entry point `render_report()`. Adding a new format only requires adding a file in `reporters/` and registering it in `render_report()`.
+
+```python
+def render_report(findings: list[Finding], format_name: str) -> str:
+    dispatch = {
+        "json": format_json,
+        "markdown": format_markdown,
+        "sarif": format_sarif,
+        "console": format_console,
+    }
+    if format_name not in dispatch:
+        raise ValueError(f"Unknown format: {format_name}")
+    return dispatch[format_name](findings)
+```
+
+#### Concept 4: Standardized Interchange Formats (JSON & SARIF 2.1.0)
+SARIF (Static Analysis Results Interchange Format) is a JSON-based OASIS standard for static analysis tools. By generating valid SARIF 2.1.0, MigrationGuard can upload findings directly to GitHub Security Code Scanning (`github/codeql-action/upload-sarif`), displaying annotations directly on PR file diffs.
+
+```python
+sarif_doc = {
+    "version": "2.1.0",
+    "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+    "runs": [{"tool": {"driver": {"name": "MigrationGuard"}}, "results": []}],
+}
+```
+
+---
+
+### 4. Design Decisions & Interview Questions
+
+#### Q1: Why use specific three-tier CLI exit codes (0, 1, 2) instead of standard binary 0 vs 1?
+**Answer:** Standard POSIX conventions distinguish between finding violations and operational failures:
+- **Exit 0 (Success)**: Analysis ran cleanly and found no unsuppressed violations at or above the `fail_on` threshold.
+- **Exit 1 (Policy Failure)**: The tool executed successfully, but found risky migrations that violate team safety policy (e.g., dropping a table). CI pipelines use this exit code to block the PR from merging.
+- **Exit 2 (System / Usage Error)**: The tool failed to run because of invalid arguments, non-existent files, malformed YAML configuration, or SQL syntax errors.
+This distinction prevents CI pipelines from confusing a broken config or syntax bug with a lint failure.
+
+#### Q2: Why must the Markdown reporter output begin with the hidden comment `<!-- migrationguard -->`?
+**Answer:** In automated CI workflows (like GitHub Actions), every new commit pushed to a pull request runs MigrationGuard. If the action posted a brand new PR comment on every commit, the PR conversation would become flooded with duplicate bot comments. By prefixing the comment with `<!-- migrationguard -->`, subsequent workflow runs can query the GitHub Comments API, find the existing comment containing this unique marker, and update it in-place using `PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}`.
+
+#### Q3: Why separate the CLI interface from the reporter implementations?
+**Answer:** Following the Single Responsibility Principle, `cli.py` is only responsible for parsing command-line flags, handling process errors, and writing output. Reporters are pure formatting functions (`list[Finding] -> str`). This separation allows reporters to be tested independently in unit tests without CLI dependencies, and allows other integrations (such as a GitHub Action or Python library) to import reporters directly.
+
+#### Q4: Why does MigrationGuard implement SARIF 2.1.0 rather than only custom JSON?
+**Answer:** While custom JSON is easy to parse with simple scripts, SARIF 2.1.0 is the industry standard supported natively by GitHub, GitLab, and Azure DevOps. GitHub Code Scanning ingests SARIF to automatically render inline annotations directly on the exact lines of code in the PR diff, create security alerts, and track remediation over time without writing custom comment-posting glue code.
+
+#### Q5: Why does `migrationguard init` refuse to overwrite existing configuration files?
+**Answer:** Safe defaults protect user data. If a developer accidentally runs `migrationguard init` inside an established project with custom table exemptions and rule severity overrides, silently overwriting `migrationguard.yml` would erase their customized configuration. Refusing to overwrite and returning an error code forces intentionality.
+
+
 
