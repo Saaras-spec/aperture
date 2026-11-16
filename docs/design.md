@@ -81,3 +81,12 @@ Aperture follows a deterministic, five-stage pipeline:
 - **Decision**: If a table was created earlier in the very same migration file, subsequent schema operations on it are exempt from locking rules.
 - **Alternatives Considered**: Flagging all `ALTER TABLE` statements indiscriminately.
 - **Why**: A table created in the same migration is brand new and empty, receiving zero live traffic. Flagging operations on new tables creates annoying false positives and reduces developer trust.
+
+### 3.6. Optional AI Explainer Architecture & Security Model
+- **Decision**: Put the AI explainer behind a `typing.Protocol` (`ExplainerProvider`) supporting Anthropic Claude and Google Gemini via standard HTTP requests, enabled via `--explain`.
+- **Alternatives Considered**: Direct tightly-coupled SDK imports (`anthropic` / `google-genai`), mandatory LLM analysis for all runs.
+- **Why**: Many enterprise CI environments run in strict, air-gapped, or cost-conscious environments. Aperture must work 100% deterministically and offline by default. When `--explain` is enabled, explanations enrich findings without altering findings count, policy evaluation, or exit codes.
+- **Security & Privacy**:
+  - Untrusted SQL isolation: User SQL is enclosed within `<untrusted_sql>` XML-style delimiters, paired with strict system directives instructing the model to treat the content solely as passive data and ignore embedded prompt injection attempts.
+  - Secret protection: API keys are read strictly from `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`, never printed, logged, or recorded in report artifacts.
+  - Cost containment: Explanations are restricted to `ERROR` and `WARNING` severities and capped at a configurable threshold (default: 10).

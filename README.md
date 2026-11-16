@@ -85,7 +85,42 @@ aperture check --base-ref origin/main
 # Output in different formats (console, markdown, json, sarif)
 aperture check --format markdown --output pr_comment.md
 aperture check --format sarif --output results.sarif
+
+# Enable optional AI-powered plain-English explanations and migration plans
+aperture check --explain
 ```
+
+---
+
+## 🤖 Optional AI Risk Explainer (`--explain`)
+
+Aperture can optionally enrich detected findings with AI-generated plain-English explanations and custom step-by-step migration plans:
+
+```bash
+# Enable AI explanations using Anthropic Claude
+export ANTHROPIC_API_KEY="sk-ant-..."
+aperture check --explain
+
+# Or using Google Gemini
+export GEMINI_API_KEY="AIzaSy..."
+aperture check --explain
+```
+
+> [!WARNING]
+> **Data Privacy Notice:** When `--explain` is enabled, the SQL statements and diagnostic messages of flagged `ERROR` and `WARNING` findings are sent to the configured provider API (Anthropic Claude or Google Gemini). Do not enable this flag if your organization prohibits sending schema definitions to external LLM providers.
+
+### Explainer Highlights & Safety Guardrails
+- **Zero Lock-In**: Works completely offline by default. If no API key is set, the flag is off, or an API call fails or times out, Aperture silently falls back to built-in rule suggestions.
+- **Invariant Exit Codes**: The AI explainer never alters which findings exist, the pass/fail determination, or process exit codes.
+- **Untrusted Input Isolation**: SQL text is wrapped in strict `<untrusted_sql>` delimiters, and the model is instructed to treat all contents solely as passive data and ignore embedded prompt injection attempts.
+- **Cost Controls**: Explanations are restricted to `ERROR` and `WARNING` severities and capped at a configurable limit (default: 10 per run).
+- **Custom Configuration (`aperture.yml`)**:
+  ```yaml
+  explain_provider: anthropic           # 'anthropic' or 'gemini' (default: auto-detect)
+  explain_model: claude-3-5-haiku-latest # or 'gemini-1.5-flash'
+  explain_max_findings: 10              # Maximum findings to explain per run
+  explain_timeout_seconds: 10.0         # HTTP request timeout
+  ```
 
 ---
 

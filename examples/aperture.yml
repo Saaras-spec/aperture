@@ -70,3 +70,11 @@ rules:
   MG010:
     enabled: true
     severity: WARNING
+
+# Optional AI Explainer Settings (used when running 'aperture check --explain')
+# Provider to use: 'anthropic' or 'gemini'. Default: auto-detect from environment keys.
+# API keys are read strictly from ANTHROPIC_API_KEY or GEMINI_API_KEY environment variables.
+# explain_provider: anthropic
+# explain_model: claude-3-5-haiku-latest
+# explain_max_findings: 10
+# explain_timeout_seconds: 10.0
