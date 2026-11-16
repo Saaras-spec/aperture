@@ -180,3 +180,21 @@ def test_cli_check_no_files_found(tmp_path: Path) -> None:
     result = runner.invoke(app, ["check", str(empty_dir)])
     assert result.exit_code == 0
     assert "No migration files found to scan" in result.output
+
+
+def test_cli_check_with_explain_flag_fallback_without_keys(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify check --explain runs cleanly and falls back when no API keys are configured."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    bad_migration = tmp_path / "008_unsafe.sql"
+    bad_migration.write_text("ALTER TABLE users DROP COLUMN email;", encoding="utf-8")
+
+    result = runner.invoke(app, ["check", str(bad_migration), "--explain"])
+    # Exit code remains 1 because of policy failure (unchanged by explainer)
+    assert result.exit_code == 1
+    assert "MG001" in result.output
+    assert "Dropping column 'email'" in result.output

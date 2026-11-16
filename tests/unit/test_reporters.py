@@ -154,3 +154,30 @@ def test_render_report_dispatch(sample_findings: list[Finding]) -> None:
 
     with pytest.raises(ValueError, match="Unsupported report format"):
         render_report(sample_findings, "xml")
+
+
+def test_reporters_with_ai_explanation() -> None:
+    """Verify that findings with AI explanation display under AI-generated explanation heading."""
+    finding = Finding(
+        rule_id="MG005",
+        severity=Severity.ERROR,
+        message="Create index without concurrently",
+        suggestion="Use CONCURRENTLY keyword",
+        file="migrations/003.sql",
+        line=4,
+        statement_sql="CREATE INDEX idx_test ON users(email);",
+        explanation="AI Safe Plan: 1. Add CONCURRENTLY outside transaction.",
+    )
+
+    console_out = format_console([finding])
+    assert "AI-generated explanation:" in console_out
+    assert "AI Safe Plan: 1. Add CONCURRENTLY outside transaction." in console_out
+
+    md_out = format_markdown([finding])
+    assert "AI-generated explanation:" in md_out
+    assert "AI Safe Plan: 1. Add CONCURRENTLY outside transaction." in md_out
+
+    json_raw = format_json([finding])
+    data = json.loads(json_raw)
+    exp_val = data["findings"][0]["explanation"]
+    assert exp_val == "AI Safe Plan: 1. Add CONCURRENTLY outside transaction."

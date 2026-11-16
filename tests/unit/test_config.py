@@ -131,3 +131,25 @@ def test_rule_config_model() -> None:
     rc = RuleConfig(enabled=True)
     assert rc.severity is None
     assert rc.enabled is True
+
+
+def test_explain_config_fields() -> None:
+    """Verify loading explain configuration settings."""
+    yaml_text = """
+    explain_provider: Anthropic
+    explain_model: claude-3-5-sonnet-latest
+    explain_max_findings: 5
+    explain_timeout_seconds: 15.0
+    """
+    config = load_config_from_yaml(yaml_text)
+    assert config.explain_provider == "anthropic"
+    assert config.explain_model == "claude-3-5-sonnet-latest"
+    assert config.explain_max_findings == 5
+    assert config.explain_timeout_seconds == 15.0
+
+
+def test_invalid_explain_provider() -> None:
+    """Verify invalid explain_provider raises ConfigError."""
+    yaml_text = "explain_provider: unsupported_ai\n"
+    with pytest.raises(ConfigError, match="Must be one of: 'anthropic', 'gemini'"):
+        load_config_from_yaml(yaml_text)
