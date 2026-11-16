@@ -1,0 +1,21 @@
+# TODO: completed in Phase 3 (Configuration Example)
+fail_on: ERROR
+
+migration_paths:
+  - "migrations/**/*.sql"
+
+large_tables:
+  - users
+  - orders
+  - audit_logs
+
+rules:
+  MG001:
+    enabled: true
+    severity: ERROR
+  MG002:
+    enabled: true
+    severity: WARNING
+  MG003:
+    enabled: true
+    severity: ERROR

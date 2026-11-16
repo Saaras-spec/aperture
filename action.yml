@@ -1,0 +1,15 @@
+# TODO: completed in Phase 5 (GitHub Action, Docker, CI)
+name: "MigrationGuard"
+description: "Scan PostgreSQL migration files for dangerous operations."
+inputs:
+  fail-on:
+    description: "Minimum severity to exit non-zero (INFO, WARNING, ERROR)"
+    required: false
+    default: "ERROR"
+  config:
+    description: "Path to migrationguard.yml config file"
+    required: false
+    default: "migrationguard.yml"
+runs:
+  using: "docker"
+  image: "Dockerfile"
