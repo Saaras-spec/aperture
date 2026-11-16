@@ -1,15 +1,38 @@
-# TODO: completed in Phase 5 (GitHub Action, Docker, CI)
 name: "MigrationGuard"
-description: "Scan PostgreSQL migration files for dangerous operations."
+description: "Scan PostgreSQL migration files for dangerous operations, locks, and regressions."
+author: "MigrationGuard Contributors"
+
 inputs:
+  config:
+    description: "Path to migrationguard.yml configuration file"
+    required: false
+    default: "migrationguard.yml"
+  base-ref:
+    description: "Git base ref to compare against HEAD via git diff (e.g. origin/main)"
+    required: false
   fail-on:
     description: "Minimum severity to exit non-zero (INFO, WARNING, ERROR)"
     required: false
     default: "ERROR"
-  config:
-    description: "Path to migrationguard.yml config file"
+  github-token:
+    description: "GitHub API token (e.g. secrets.GITHUB_TOKEN) for posting PR comments"
     required: false
-    default: "migrationguard.yml"
+  comment-on-pr:
+    description: "Whether to post or update a PR comment with migration findings (true/false)"
+    required: false
+    default: "true"
+
+outputs:
+  findings-count:
+    description: "Total number of findings detected across all scanned migration files"
+  passed:
+    description: "Whether all checks passed without blocking findings (true/false)"
+
 runs:
   using: "docker"
   image: "Dockerfile"
+  entrypoint: "/app/entrypoint.sh"
+
+branding:
+  icon: "shield"
+  color: "blue"
