@@ -226,7 +226,7 @@ jobs:
 | **MG009** | `ERROR` | UPDATE or DELETE without WHERE | Mass row modification or accidental table wipeout |
 | **MG010** | `WARNING` | Risky ALTER TABLE without lock_timeout | Stalls in lock queue and blocks incoming application traffic |
 | **MG011** | `WARNING` | ADD FOREIGN KEY without index on referencing column | Unindexed foreign key causes sequential scans or locks during referenced deletes/updates |
-| **MG012** | `ERROR` | DROP COLUMN or DROP TABLE with active dependents | Relation or column still referenced by active foreign key or index |
+| **MG012** | `ERROR` | DROP COLUMN or DROP TABLE with active dependents | Relation or column referenced by foreign key (ERROR) or index (WARNING) |
 
 ---
 
@@ -271,7 +271,7 @@ rules:
 
 ## 🗺️ Roadmap
 
-- [ ] **Schema-Aware Analysis with PostgreSQL Version Awareness** *(Planned)*: Track table and column state evolution across historical migrations and customize locking analysis based on target PostgreSQL version behavior.
+- [x] **Schema-Aware Analysis with PostgreSQL Version Awareness**: Track table and column state evolution across historical migrations and customize locking analysis based on target PostgreSQL version behavior.
 - [ ] **Baseline Mode and Auto-Fix** *(Planned)*: Snapshot legacy migration directories to baseline existing violations, with automated remediation (`aperture fix`) to generate non-blocking migration code.
 - [ ] **Dynamic Verification (`aperture verify`)** *(Planned)*: Apply migrations on a throwaway PostgreSQL database and record the locks each statement acquires and whether tables are rewritten, to check the static rules against real behaviour.
 - [ ] **Real-World Benchmark** *(Planned)*: Run Aperture on open-source projects that use plain SQL migration files and report findings, false-positive rate and speed.

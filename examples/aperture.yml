@@ -81,7 +81,7 @@ rules:
     enabled: true
     severity: WARNING
 
-  # MG012: DROP COLUMN or DROP TABLE with active dependents (index or foreign key)
+  # MG012: DROP COLUMN or DROP TABLE with active dependents (FK is ERROR, index is WARNING)
   MG012:
     enabled: true
     severity: ERROR

@@ -51,6 +51,31 @@ def test_mg011_edge_case_composite_index_prefix() -> None:
     assert len(mg011_findings) == 0
 
 
+def test_mg011_index_leading_column_order_passes() -> None:
+    """MG011 passes when foreign key column matches index leading column: (user_id, x)."""
+    sql = """
+    CREATE INDEX CONCURRENTLY idx_orders_user_x ON orders (user_id, x);
+    ALTER TABLE orders ADD CONSTRAINT fk_orders_user
+    FOREIGN KEY (user_id) REFERENCES users (id) NOT VALID;
+    """
+    findings = check_sql_string(sql, config=Config())
+    mg011_findings = [f for f in findings if f.rule_id == "MG011"]
+    assert len(mg011_findings) == 0
+
+
+def test_mg011_index_non_leading_column_order_fails() -> None:
+    """MG011 triggers WARNING when foreign key column is not leading in index: (x, user_id)."""
+    sql = """
+    CREATE INDEX CONCURRENTLY idx_orders_x_user ON orders (x, user_id);
+    ALTER TABLE orders ADD CONSTRAINT fk_orders_user
+    FOREIGN KEY (user_id) REFERENCES users (id) NOT VALID;
+    """
+    findings = check_sql_string(sql, config=Config())
+    mg011_findings = [f for f in findings if f.rule_id == "MG011"]
+    assert len(mg011_findings) == 1
+    assert mg011_findings[0].severity == Severity.WARNING
+
+
 # ============================================================================
 # MG012: DROP COLUMN or DROP TABLE with active dependents
 # ============================================================================
@@ -75,8 +100,8 @@ def test_mg012_bad_case_drop_table_with_referencing_fk() -> None:
     assert "fk_orders_user" in mg012_findings[0].message
 
 
-def test_mg012_bad_case_drop_column_with_active_index() -> None:
-    """MG012 triggers ERROR when dropping a column that is still indexed."""
+def test_mg012_bad_case_drop_column_with_active_index_is_warning() -> None:
+    """MG012 triggers WARNING when dropping a column with only an index dependency."""
     sql = """
     CREATE TABLE users (id serial, email text);
     CREATE INDEX idx_users_email ON users (email);
@@ -85,9 +110,32 @@ def test_mg012_bad_case_drop_column_with_active_index() -> None:
     findings = check_sql_string(sql, config=Config())
     mg012_findings = [f for f in findings if f.rule_id == "MG012"]
     assert len(mg012_findings) == 1
-    assert mg012_findings[0].severity == Severity.ERROR
+    assert mg012_findings[0].severity == Severity.WARNING
     assert "email" in mg012_findings[0].message
     assert "idx_users_email" in mg012_findings[0].message
+
+
+def test_mg012_bad_case_drop_column_with_referencing_fk_is_error() -> None:
+    """MG012 triggers ERROR when dropping a column referenced by a foreign key."""
+    sql = """
+    CREATE TABLE users (id serial primary key);
+    CREATE TABLE orders (
+        id serial primary key,
+        user_id int,
+        CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id)
+    );
+    ALTER TABLE users DROP COLUMN id;
+    """
+    findings = check_sql_string(sql, config=Config())
+    mg012_findings = [f for f in findings if f.rule_id == "MG012"]
+    # Check that foreign key reference produces an ERROR finding
+    fk_errors = [f for f in mg012_findings if f.severity == Severity.ERROR]
+    assert len(fk_errors) == 1
+    assert "id" in fk_errors[0].message
+    assert "fk_orders_user" in fk_errors[0].message
+    # Check that index on id produces a WARNING finding
+    idx_warnings = [f for f in mg012_findings if f.severity == Severity.WARNING]
+    assert len(idx_warnings) == 1
 
 
 def test_mg012_good_case_drop_fk_before_table() -> None:

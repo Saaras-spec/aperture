@@ -100,3 +100,16 @@ def test_mg004_not_valid_check_constraint_still_triggers_on_pg14() -> None:
     findings = check_sql_string(sql, config=config_pg14)
     mg004_findings = [f for f in findings if f.rule_id == "MG004"]
     assert len(mg004_findings) == 1
+
+
+def test_mg004_validated_after_not_valid_suppresses_on_pg12() -> None:
+    """A CHECK constraint added NOT VALID and then validated suppresses MG004 on PG 12+."""
+    sql = """
+    ALTER TABLE users ADD CONSTRAINT chk_email_not_null CHECK (email IS NOT NULL) NOT VALID;
+    ALTER TABLE users VALIDATE CONSTRAINT chk_email_not_null;
+    ALTER TABLE users ALTER COLUMN email SET NOT NULL;
+    """
+    config_pg14 = Config(target_postgres_version=14)
+    findings = check_sql_string(sql, config=config_pg14)
+    mg004_findings = [f for f in findings if f.rule_id == "MG004"]
+    assert len(mg004_findings) == 0

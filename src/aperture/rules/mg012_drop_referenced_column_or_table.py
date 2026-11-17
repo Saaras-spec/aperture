@@ -83,12 +83,13 @@ class DropReferencedColumnOrTableRule(Rule):
                     col_name = str(getattr(cmd, "name", "")).lower()
 
                     # Check for active indexes on this column
+                    # WARNING severity: index is dropped automatically with the column
                     active_indexes = context.schema.get_indexes_on_column(tbl, col_name)
                     for idx in active_indexes:
                         findings.append(
                             Finding(
                                 rule_id=self.id,
-                                severity=self.default_severity,
+                                severity=Severity.WARNING,
                                 message=(
                                     f"Cannot safely drop column '{col_name}' on table '{tbl}': "
                                     f"active index '{idx.name}' still references it. Postgres will "
