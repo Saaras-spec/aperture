@@ -1034,3 +1034,131 @@ with urllib.request.urlopen(req, timeout=5.0) as resp:
 
 #### Q5: Why restrict AI explanations only to `ERROR` and `WARNING` severities and cap the total number of explained findings per run?
 **Answer:** Cost control and latency containment. Each LLM API call consumes tokens and incurs network round-trip latency. In a large repository where a migration touches multiple tables or generates many findings, issuing dozens of simultaneous LLM requests would cause slow CI builds, exhaust API rate limits, and incur unexpected financial costs. Restricting explanations to blocking severities (`ERROR` and `WARNING`) and enforcing a configurable cap (default: 10) guarantees fast, cost-effective execution.
+
+
+---
+
+## Phase 8: Schema-Aware Analysis & PostgreSQL Version Awareness
+
+### 1. Files Created/Completed and What Each Does
+
+- **`src/aperture/schema.py`**:
+  - Implements `SchemaState` and domain models `TableState`, `ColumnState`, `ConstraintState`, and `IndexState`.
+  - Tracks schema changes across migration statements and files in temporal order (sorted by filename).
+  - Handles `CreateStmt` (table creation, columns, primary keys, foreign keys, unique constraints, check constraints), `AlterTableStmt` (add/drop column, add/drop constraint, validate constraint, set/drop not null), `IndexStmt` (create index, composite and unique indexes), `DropStmt` (drop table and index), and `RenameStmt` (rename table, column, index).
+  - Provides query methods: `is_table_created_in_run`, `has_index_on_columns` (prefix matching for foreign keys), `has_check_not_null`, `get_referencing_foreign_keys`, `get_indexes_on_column`, and `get_constraints_on_column`.
+- **`src/aperture/rules/mg011_foreign_key_missing_index.py`**:
+  - Implements Rule `MG011` (`ADD FOREIGN KEY without index on referencing column`).
+  - Detects foreign key additions where the referencing table lacks an index covering the foreign key columns.
+  - Explains the locking hazard: updates to the referenced table's primary key or deletions require sequential scans or exclusive locks on the referencing table.
+  - Recommends creating a concurrent index on the referencing side before adding the constraint.
+- **`src/aperture/rules/mg012_drop_referenced_column_or_table.py`**:
+  - Implements Rule `MG012` (`DROP COLUMN or DROP TABLE with active dependents`).
+  - Detects `DROP TABLE` or `DROP COLUMN` on entities that have active dependent objects in the tracked schema (e.g. foreign keys or indexes).
+  - Recommends dropping dependent constraints or concurrent indexes before dropping the relation or column.
+- **`src/aperture/rules/helpers.py`**:
+  - Implements `is_table_created_in_run()`, checking both the cross-file `SchemaState` and preceding statements in the same file.
+- **`src/aperture/rules/mg003_add_column_not_null_without_default.py`**:
+  - Upgraded with PostgreSQL version awareness:
+    - On PostgreSQL 11+, adding a column with a constant `DEFAULT` is instant (metadata-only) and safe. If the default expression is volatile (e.g. `clock_timestamp()`), it warns that a full table rewrite is required.
+    - On PostgreSQL < 11, adding `NOT NULL DEFAULT` requires a full table rewrite under `ACCESS EXCLUSIVE` lock.
+  - Exempts operations on tables created in the same migration run.
+- **`src/aperture/rules/mg004_set_not_null_on_existing_column.py`**:
+  - Upgraded with PostgreSQL 12+ optimization: if a valid `CHECK (col IS NOT NULL)` constraint exists, `SET NOT NULL` is safe because PostgreSQL 12+ avoids the sequential table scan.
+  - Exempts operations on tables created in the same migration run.
+- **`src/aperture/rules/mg005_create_index_without_concurrently.py`**, **`mg006_add_foreign_key_without_not_valid.py`**, **`mg007_add_check_constraint_without_not_valid.py`**, **`mg008_alter_column_type.py`**:
+  - Updated to use `is_table_created_in_run`, eliminating false positives for tables created earlier in the same migration run.
+- **`src/aperture/config.py`**:
+  - Added `target_postgres_version` (default: 14) to `Config` with validation (`ge=9, le=18`).
+- **`src/aperture/engine.py`**:
+  - Updated `check_files` to sort files by filename and thread a single shared `SchemaState` instance across all migrations in order.
+- **`tests/unit/test_schema.py`**, **`tests/unit/test_rules_version_and_run.py`**, **`tests/unit/test_rules_mg011_mg012.py`**:
+  - Comprehensive unit test suites testing all schema tracking operations, version-aware rules, and false positive exemptions.
+
+---
+
+### 2. How Data Flows Between Them
+
+1. `check_files` receives a list of migration paths and sorts them by filename (`Path(p).name`) to ensure temporal chronological execution order.
+2. An instance of `SchemaState` is initialized once per migration run.
+3. For each migration file and statement:
+   - Aperture builds a `StatementContext` containing the statement AST, the shared `SchemaState`, and `target_postgres_version`.
+   - Active rules (including `MG011` and `MG012`) inspect the AST alongside `context.schema` to detect dangerous operations and verify whether supporting indexes, constraints, or parent tables exist.
+   - Rules `MG003`–`MG008` consult `context.schema.is_table_created_in_run(table_name)`: if the table was created earlier in the run, locking findings are safely suppressed.
+   - Rules `MG003` and `MG004` check `context.target_postgres_version` to apply version-specific rules.
+   - Once rule checks complete, `schema.apply_statement(statement)` executes, mutating the schema state (tables, columns, indexes, constraints) so that subsequent statements see the updated schema.
+
+---
+
+### 3. Key Python Concepts Used (with examples)
+
+#### Concept 1: Prefix Matching on Tuples for Composite Indexes
+In PostgreSQL, a composite index on `(a, b, c)` can serve queries that filter by `(a)` or `(a, b)` because B-trees index from the leading column. In Python, tuple slicing provides a concise, idiomatic way to test whether an index covers target columns as a leading prefix:
+
+```python
+target_cols = ("tenant_id", "user_id")
+index_cols = ("tenant_id", "user_id", "created_at")
+k = len(target_cols)
+
+# Tests if target_cols match the leading k columns of index_cols
+covers = len(index_cols) >= k and index_cols[:k] == target_cols
+print(covers)  # True
+```
+
+#### Concept 2: Safe Dictionary Mutation During Iteration (`list(dict.keys())`)
+In Python, modifying a dictionary (adding or deleting keys) while iterating directly over it raises a `RuntimeError: dictionary changed size during iteration`. To safely delete keys or rename entries during schema state updates, you snapshot the keys into a separate `list`:
+
+```python
+indexes = {
+    "idx_users_id": "table_users",
+    "idx_users_email": "table_users",
+    "idx_orders": "table_orders",
+}
+
+# Safe: iterating over a list snapshot allows deleting from the dictionary
+for idx_name in list(indexes.keys()):
+    if indexes[idx_name] == "table_users":
+        del indexes[idx_name]
+```
+
+#### Concept 3: Forward References and Circular Import Prevention (`TYPE_CHECKING`)
+When two modules need to reference each other's types for static type annotations (e.g. `StatementContext` in `models.py` referencing `SchemaState` in `schema.py`, while `schema.py` imports `ParsedStatement` from `models.py`), a runtime circular import error occurs. Using `typing.TYPE_CHECKING` with `from __future__ import annotations` solves this: Python only imports the type during static analysis with mypy, but skips it at runtime:
+
+```python
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from aperture.schema import SchemaState  # Only imported during mypy type checking!
+```
+
+#### Concept 4: Temporal Ordering with Custom Sort Keys
+Python's `sorted()` function takes a `key` parameter that maps each item to a comparable value. When processing migrations from multiple directory levels (e.g. `migrations/001_init.sql`, `other/002_add.sql`), sorting by the filename (`Path(p).name`) ensures migrations execute in logical chronological order:
+
+```python
+from pathlib import Path
+
+paths = [Path("dir_b/002_add_index.sql"), Path("dir_a/001_create_table.sql")]
+sorted_paths = sorted(paths, key=lambda p: p.name)
+print([p.name for p in sorted_paths])  # ['001_create_table.sql', '002_add_index.sql']
+```
+
+---
+
+### 4. Design Decisions & Interview Questions
+
+#### Q1: Why must migration files be sorted by filename before threading `SchemaState` across them?
+**Answer:** Migration frameworks (Flyway, Alembic, Rails, Goose, golang-migrate) enforce chronological execution order using lexicographical timestamp or version prefixes (e.g. `V1__init.sql`, `20240101_add_users.sql`). If Aperture evaluated files in arbitrary filesystem order, a migration creating a table could be evaluated after an `ALTER TABLE` on that same table. Sorting by filename guarantees that statements are applied to `SchemaState` in the exact sequence in which the database migration runner executes them.
+
+#### Q2: Why does `SchemaState.apply_statement()` run *after* evaluating rules on the statement rather than before?
+**Answer:** Rules evaluate whether the *current* statement is safe given the schema that exists up to that moment. For example, rule `MG012` checks whether a `DROP TABLE users` or `DROP COLUMN email` is safe by verifying whether active foreign keys or indexes still exist in `SchemaState`. If `apply_statement()` were called before rule execution, `apply_statement()` would have already removed the table and its indexes from `SchemaState`, preventing `MG012` from seeing the dependencies that made the drop dangerous.
+
+#### Q3: How does PostgreSQL 11+ alter the performance and locking characteristics of `ALTER TABLE ADD COLUMN ... DEFAULT`?
+**Answer:** Prior to PostgreSQL 11, adding a column with a `DEFAULT` clause required rewriting every row on disk to populate the default value, holding an `ACCESS EXCLUSIVE` lock on the entire relation for the duration of the rewrite. In PostgreSQL 11 (commit `168222d`), support was added to store constant defaults in catalog metadata (`pg_attribute.attmissingval`). When existing rows are read later, PostgreSQL returns the default value without rewriting the table. As a result, in PG 11+, `ADD COLUMN NOT NULL DEFAULT <constant>` is an instantaneous metadata-only operation. However, volatile default expressions (such as `clock_timestamp()` or `random()`) cannot be computed once in metadata and still require a full table rewrite.
+
+#### Q4: Why does PostgreSQL 12+ `SET NOT NULL` avoid a full-table scan when a verified CHECK constraint exists, and how does Aperture model this?
+**Answer:** `ALTER TABLE ... ALTER COLUMN ... SET NOT NULL` normally performs a full sequential table scan under `ACCESS EXCLUSIVE` lock to verify that no rows contain `NULL`s. PostgreSQL 12 introduced an optimization: if a valid `CHECK (col IS NOT NULL)` constraint already exists on the column, PostgreSQL skips the table scan entirely because the constraint mathematically guarantees zero NULL values. Aperture models this by tracking constraint definitions in `TableState.constraints` and checking `SchemaState.has_check_not_null()` when evaluating `MG004`. If `target_postgres_version >= 12` and a verified CHECK constraint is present, `MG004` safely suppresses the finding.
+
+#### Q5: Why is an unindexed foreign key (`MG011`) considered an operational hazard in production PostgreSQL databases?
+**Answer:** In PostgreSQL, creating a foreign key creates an index on the *referenced* (parent) table, but does *not* automatically create an index on the referencing (child) table. When a row in the parent table is deleted or its primary key is updated, PostgreSQL must check whether any rows in the child table reference that key. Without an index on the child table's foreign key columns, PostgreSQL is forced to perform a full sequential scan of the child table while holding a `SHARE ROW EXCLUSIVE` lock. On large production tables, this causes query queues, lock starvation, and connection pool exhaustion. Aperture flags `MG011` to prompt developers to create an index concurrently before adding foreign key constraints.

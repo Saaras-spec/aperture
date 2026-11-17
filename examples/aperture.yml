@@ -5,6 +5,11 @@
 # Allowed values: INFO, WARNING, ERROR. Default: ERROR
 fail_on: ERROR
 
+# Target PostgreSQL major version (supports 9 to 18). Default: 14.
+# Rules adjust their analysis based on version capabilities (e.g. metadata-only
+# ADD COLUMN with DEFAULT in PG 11+, verified CHECK constraint SET NOT NULL in PG 12+).
+target_postgres_version: 14
+
 # Glob patterns used by 'aperture check' to locate SQL migration files.
 # Default: ["migrations/**/*.sql", "migrations/*.sql"]
 migration_paths:
@@ -70,6 +75,16 @@ rules:
   MG010:
     enabled: true
     severity: WARNING
+
+  # MG011: ADD FOREIGN KEY without index on referencing column
+  MG011:
+    enabled: true
+    severity: WARNING
+
+  # MG012: DROP COLUMN or DROP TABLE with active dependents (index or foreign key)
+  MG012:
+    enabled: true
+    severity: ERROR
 
 # Optional AI Explainer Settings (used when running 'aperture check --explain')
 # Provider to use: 'anthropic' or 'gemini'. Default: auto-detect from environment keys.

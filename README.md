@@ -225,6 +225,8 @@ jobs:
 | **MG008** | `ERROR` | ALTER COLUMN TYPE | Full table rewrite and index rebuild under exclusive lock |
 | **MG009** | `ERROR` | UPDATE or DELETE without WHERE | Mass row modification or accidental table wipeout |
 | **MG010** | `WARNING` | Risky ALTER TABLE without lock_timeout | Stalls in lock queue and blocks incoming application traffic |
+| **MG011** | `WARNING` | ADD FOREIGN KEY without index on referencing column | Unindexed foreign key causes sequential scans or locks during referenced deletes/updates |
+| **MG012** | `ERROR` | DROP COLUMN or DROP TABLE with active dependents | Relation or column still referenced by active foreign key or index |
 
 ---
 
@@ -245,6 +247,7 @@ If an ignore directive omits the reason (e.g. `-- aperture:ignore MG001`), Apert
 
 ```yaml
 fail_on: ERROR
+target_postgres_version: 14 # default: 14 (supports 9 to 18)
 
 migration_paths:
   - "migrations/**/*.sql"

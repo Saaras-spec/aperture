@@ -90,3 +90,15 @@ Aperture follows a deterministic, five-stage pipeline:
   - Untrusted SQL isolation: User SQL is enclosed within `<untrusted_sql>` XML-style delimiters, paired with strict system directives instructing the model to treat the content solely as passive data and ignore embedded prompt injection attempts.
   - Secret protection: API keys are read strictly from `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`, never printed, logged, or recorded in report artifacts.
   - Cost containment: Explanations are restricted to `ERROR` and `WARNING` severities and capped at a configurable threshold (default: 10).
+
+### 3.7. Schema-Aware Analysis and Version Awareness
+- **Decision**: Introduce a `SchemaState` model (`src/aperture/schema.py`) that processes statements across migration files in temporal order (sorted by filename), tracking tables, columns, indexes, and constraints. Provide a configurable `target_postgres_version` (default: 14) in `aperture.yml` so rules adapt to engine-specific capabilities.
+- **Why**:
+  - *False Positive Reduction*: Tables created earlier in the same migration run (across preceding files or earlier in the same file) are new and empty; operations on them do not hold locks on live data or require zero-downtime workarounds. Rules `MG003`–`MG008` exempt operations on these tables.
+  - *Version Awareness*: PostgreSQL's DDL capabilities vary across versions:
+    - PostgreSQL 11+ stores constant column defaults in catalog metadata (`pg_attribute.attmissingval`), avoiding a table rewrite on `ADD COLUMN ... NOT NULL DEFAULT <constant>` (ref: [PostgreSQL 11 release notes](https://www.postgresql.org/docs/11/release-11.html)). Volatile defaults (e.g. `clock_timestamp()`) still rewrite the table. In PostgreSQL < 11, adding `NOT NULL DEFAULT` always rewrites the table under `ACCESS EXCLUSIVE` lock.
+    - PostgreSQL 12+ optimizes `ALTER COLUMN ... SET NOT NULL` to avoid a full table scan if an equivalent verified `CHECK (col IS NOT NULL)` constraint exists (ref: [PostgreSQL 12 release notes](https://www.postgresql.org/docs/12/release-12.html)).
+  - *Relational Dependency Checks*: Rules `MG011` (detecting unindexed foreign keys that cause locking during parent deletes/updates) and `MG012` (detecting drops of columns or tables still referenced by active indexes or foreign keys) require cross-statement relational context.
+- **Known Limitations & Boundaries**:
+  - *Dynamic SQL & PL/pgSQL*: Aperture parses static SQL ASTs via `pglast`. DDL statements generated inside dynamic SQL string concatenations or `DO $$ ... $$` blocks cannot be inspected statically.
+  - *Partial Migration Sets*: When scanning only a subset of migrations (e.g. only files touched in a small PR), `SchemaState` only knows about objects defined or modified within that scanned set. Preexisting production schema objects are not inferred unless defined in the scanned history.
