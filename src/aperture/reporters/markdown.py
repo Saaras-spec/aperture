@@ -31,17 +31,27 @@ def format_markdown(findings: list[Finding]) -> str:
         "",
     ]
 
-    if not findings:
-        lines.append("✅ **All migration safety checks passed! Zero risks detected.**")
+    active_findings = [f for f in findings if not f.baselined]
+    baselined_count = sum(1 for f in findings if f.baselined)
+
+    if not active_findings:
+        if baselined_count > 0:
+            lines.append(
+                f"✅ **All migration safety checks passed!** "
+                f"({baselined_count} baseline finding(s) excluded)."
+            )
+        else:
+            lines.append("✅ **All migration safety checks passed! Zero risks detected.**")
         return "\n".join(lines)
 
-    unsuppressed = [f for f in findings if not f.suppressed]
+    unsuppressed = [f for f in active_findings if not f.suppressed]
     if unsuppressed:
         error_count = sum(1 for f in unsuppressed if f.severity == Severity.ERROR)
         warning_count = sum(1 for f in unsuppressed if f.severity == Severity.WARNING)
+        base_note = f" ({baselined_count} baselined)" if baselined_count > 0 else ""
         lines.append(
-            f"❌ **Risks detected:** {error_count} error(s), {warning_count} warning(s). "
-            "Please review safe alternatives below before merging."
+            f"❌ **Risks detected:** {error_count} error(s), {warning_count} warning(s)"
+            f"{base_note}. Please review safe alternatives below before merging."
         )
     else:
         lines.append(
@@ -59,7 +69,7 @@ def format_markdown(findings: list[Finding]) -> str:
         ]
     )
 
-    for f in findings:
+    for f in active_findings:
         icon = (
             "⚪ SUPPRESSED" if f.suppressed else _SEVERITY_ICONS.get(f.severity, f.severity.value)
         )
@@ -77,7 +87,7 @@ def format_markdown(findings: list[Finding]) -> str:
         ]
     )
 
-    for idx, f in enumerate(findings, 1):
+    for idx, f in enumerate(active_findings, 1):
         status_tag = " (Suppressed)" if f.suppressed else ""
         loc_str = f"{f.file}:{f.line}"
         lines.append(

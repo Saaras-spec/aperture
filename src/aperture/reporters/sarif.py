@@ -72,7 +72,8 @@ def format_sarif(findings: list[Finding], indent: int = 2) -> str:
     rule_descriptors = _build_rule_descriptors()
 
     results: list[dict[str, Any]] = []
-    for f in findings:
+    active_findings = [f for f in findings if not f.baselined]
+    for f in active_findings:
         sarif_level = _SEVERITY_TO_SARIF_LEVEL.get(f.severity, "warning")
 
         # Convert backslashes to forward slashes for cross-platform URIs

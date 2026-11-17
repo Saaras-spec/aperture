@@ -221,6 +221,13 @@ def check(
             help="Generate AI-powered plain-English risk explanations and migration plans.",
         ),
     ] = False,
+    baseline: Annotated[
+        Path | None,
+        typer.Option(
+            "--baseline",
+            help="Path to baseline file (.aperture-baseline.json) to filter known legacy findings.",
+        ),
+    ] = None,
 ) -> None:
     """Scan PostgreSQL migration files for risky operations and policy violations."""
     # 1. Load configuration
@@ -252,6 +259,17 @@ def check(
     except ParseError as err:
         typer.secho(f"SQL parse error:\n{err}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from None
+
+    # Filter findings against baseline if provided
+    if baseline:
+        from aperture.baseline import apply_baseline, load_baseline
+
+        try:
+            bl = load_baseline(baseline)
+            findings = apply_baseline(findings, bl)
+        except (FileNotFoundError, ValueError) as err:
+            typer.secho(f"Baseline error: {err}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2) from None
 
     # Optional AI explanation enrichment
     if explain:
@@ -370,6 +388,79 @@ def explain(
     for line in details["safe_alternative"].splitlines():
         typer.echo(f"  {line}")
     typer.echo("")
+
+
+@app.command()
+def baseline(
+    paths: Annotated[
+        list[Path] | None,
+        typer.Argument(
+            help="Optional specific SQL migration file paths or directories to scan.",
+        ),
+    ] = None,
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            "-c",
+            help="Path to aperture.yml configuration file.",
+        ),
+    ] = None,
+    base_ref: Annotated[
+        str | None,
+        typer.Option(
+            "--base-ref",
+            "-b",
+            help="Git base ref to compare against HEAD via git diff.",
+        ),
+    ] = None,
+    output: Annotated[
+        Path,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Path to write baseline JSON file.",
+        ),
+    ] = Path(".aperture-baseline.json"),
+) -> None:
+    """Record current migration findings into a baseline file."""
+    # 1. Load config
+    try:
+        cfg = load_config(config)
+    except ConfigError as err:
+        typer.secho(f"Configuration error:\n{err}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from None
+
+    # 2. Discover files
+    try:
+        discovered = discover_files(paths=paths, config=cfg, base_ref=base_ref)
+    except DiscoveryError as err:
+        typer.secho(f"File discovery error:\n{err}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from None
+
+    if not discovered:
+        typer.echo("No migration files found to baseline.")
+        raise typer.Exit(code=0)
+
+    # 3. Analyze
+    try:
+        findings = check_files(discovered, cfg)
+    except ParseError as err:
+        typer.secho(f"SQL parse error:\n{err}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from None
+
+    # 4. Generate and save baseline
+    from aperture.baseline import create_baseline, save_baseline
+
+    bl = create_baseline(findings)
+    try:
+        save_baseline(bl, output)
+    except OSError as err:
+        typer.secho(f"Failed to write baseline file: {err}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from None
+
+    typer.echo(f"Recorded {len(bl.findings)} finding(s) to {output}")
+    raise typer.Exit(code=0)
 
 
 def main() -> None:

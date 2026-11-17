@@ -21,10 +21,19 @@ def format_json(findings: list[Finding], indent: int = 2) -> str:
         JSON formatted string.
     """
     total = len(findings)
-    errors = sum(1 for f in findings if not f.suppressed and f.severity == Severity.ERROR)
-    warnings = sum(1 for f in findings if not f.suppressed and f.severity == Severity.WARNING)
-    info = sum(1 for f in findings if not f.suppressed and f.severity == Severity.INFO)
+    errors = sum(
+        1 for f in findings if not f.suppressed and not f.baselined and f.severity == Severity.ERROR
+    )
+    warnings = sum(
+        1
+        for f in findings
+        if not f.suppressed and not f.baselined and f.severity == Severity.WARNING
+    )
+    info = sum(
+        1 for f in findings if not f.suppressed and not f.baselined and f.severity == Severity.INFO
+    )
     suppressed = sum(1 for f in findings if f.suppressed)
+    baselined = sum(1 for f in findings if f.baselined)
 
     findings_data: list[dict[str, Any]] = [
         {
@@ -38,6 +47,7 @@ def format_json(findings: list[Finding], indent: int = 2) -> str:
             "suppressed": f.suppressed,
             "suppression_reason": f.suppression_reason,
             "explanation": f.explanation,
+            "baselined": f.baselined,
         }
         for f in findings
     ]
@@ -49,6 +59,7 @@ def format_json(findings: list[Finding], indent: int = 2) -> str:
             "warnings": warnings,
             "info": info,
             "suppressed": suppressed,
+            "baselined": baselined,
             "passed": errors == 0,
         },
         "findings": findings_data,

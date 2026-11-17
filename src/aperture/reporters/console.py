@@ -44,9 +44,12 @@ def format_console(
         )
         return f"\n{success_msg}\n"
 
-    # Group findings by file path
+    # Group unbaselined findings by file path
+    active_findings = [f for f in findings if not f.baselined]
+    total_baselined = sum(1 for f in findings if f.baselined)
+
     by_file: dict[str, list[Finding]] = defaultdict(list)
-    for f in findings:
+    for f in active_findings:
         by_file[f.file].append(f)
 
     lines: list[str] = [""]
@@ -121,6 +124,10 @@ def format_console(
         summary_parts.append(
             typer.style(f"{total_suppressed} suppressed", fg=typer.colors.WHITE, dim=True)
         )
+    if total_baselined > 0:
+        summary_parts.append(
+            typer.style(f"{total_baselined} baselined", fg=typer.colors.CYAN, dim=True)
+        )
 
     file_count = len(by_file)
     summary_text = ", ".join(summary_parts) if summary_parts else "0 issues"
@@ -128,7 +135,9 @@ def format_console(
     lines.append(summary_line)
 
     if fail_on is not None:
-        has_blocking = any(not f.suppressed and f.severity >= fail_on for f in findings)
+        has_blocking = any(
+            not f.suppressed and not f.baselined and f.severity >= fail_on for f in findings
+        )
         if has_blocking:
             lines.append(
                 typer.style(

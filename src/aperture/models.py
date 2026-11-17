@@ -61,6 +61,7 @@ class Finding:
     suppressed: bool = False
     suppression_reason: str | None = None
     explanation: str | None = None
+    baselined: bool = False
 
 
 @dataclass

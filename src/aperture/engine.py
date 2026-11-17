@@ -113,10 +113,10 @@ def compute_exit_code(findings: list[Finding], fail_on: Severity) -> int:
     """Compute CLI exit code based on findings and fail_on severity threshold.
 
     Returns:
-        0: No unsuppressed findings at or above fail_on severity.
-        1: One or more unsuppressed findings at or above fail_on severity.
+        0: No unsuppressed, unbaselined findings at or above fail_on severity.
+        1: One or more unsuppressed, unbaselined findings at or above fail_on severity.
     """
     for finding in findings:
-        if not finding.suppressed and finding.severity >= fail_on:
+        if not finding.suppressed and not finding.baselined and finding.severity >= fail_on:
             return 1
     return 0
