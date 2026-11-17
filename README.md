@@ -177,6 +177,7 @@ Follow these exact steps to verify the AI explainer with a real key:
 | Command | Description |
 | :--- | :--- |
 | `aperture check [PATHS...]` | Scan migration files for dangerous operations |
+| `aperture verify [PATHS...] --dsn <DSN>` | Dynamically verify migrations against a throwaway PostgreSQL database |
 | `aperture baseline [PATHS...]` | Snapshot current findings into `.aperture-baseline.json` |
 | `aperture fix [PATHS...] [--write]` | Preview or apply automated AST safe migration rewrites |
 | `aperture list-rules` | Display a catalog table of all registered rules |
@@ -250,6 +251,37 @@ Rewrites the migration files in place with safe alternatives.
 
 - **Transaction Block Restrictions**: In PostgreSQL, `CREATE INDEX CONCURRENTLY` cannot run inside an explicit transaction block (`BEGIN` ... `COMMIT`). If Aperture detects that a `CREATE INDEX` statement is wrapped inside a transaction block, it skips the rewrite and outputs an explicit warning to `stderr` explaining that the index creation must be moved outside the transaction.
 - **Opt-In Safety**: Rewriting SQL migrations can impact deployment choreography. Auto-fix is strictly opt-in and requires the `--write` flag to modify files on disk. Destructive operations (such as `DROP TABLE` or `DROP COLUMN`) require manual engineering decisions and are intentionally never auto-fixed.
+
+---
+
+## 🔬 Dynamic Verification (`aperture verify`)
+
+Aperture can dynamically verify migration statements against a live PostgreSQL instance (e.g., in CI or on a throwaway Docker database) to compare static rule predictions against real database behavior.
+
+```bash
+aperture verify migrations/ \
+  --dsn "postgresql://user:pass@localhost:5432/throwaway_db" \
+  --i-understand-this-runs-the-migration
+```
+
+### How It Works
+
+1. **Transactional Execution**: Wraps statements inside a single transaction on the target database and executes them sequentially.
+2. **Lock Inspection (`pg_locks`)**: Queries `pg_locks` for relation-level locks held by the session's backend (`pg_backend_pid()`), determining the exact strongest lock mode acquired per table (e.g. `ShareLock`, `AccessExclusiveLock`).
+3. **Table Rewrite Detection (`pg_class.relfilenode`)**: Snapshots `pg_relation_filenode` before and after each statement. If an existing table's filenode changes, PostgreSQL physically rewrote the table.
+4. **Prediction Comparison**: Compares observed runtime behavior against static findings:
+   - `MG005 predicted blocking writes: CONFIRMED (ShareLock held)`
+   - `MG008 predicted a rewrite: CONFIRMED (relfilenode changed)`
+   - Flags any discrepancies in a dedicated **Mismatches** section.
+5. **Automatic Rollback**: Always executes `ROLLBACK` at the end of the verification session, leaving the database completely clean.
+
+### Safety Model & Limits
+
+- **Safety Guard**: Aperture strictly refuses to run unless `--i-understand-this-runs-the-migration` is explicitly passed.
+- **Credential Protection**: The target database name is printed prior to execution, and the connection DSN password is never logged, printed, or recorded in report output.
+- **Non-Transactional Statements**: Statements prohibited inside transaction blocks (such as `CREATE INDEX CONCURRENTLY` or `VACUUM`) are reported as `"not verifiable in a transaction"` and skipped rather than aborting the verify run.
+- **Testing Limits**: Designed for throwaway CI/test databases. Dynamic verification tests engine locking rules, but cannot measure lock wait queues or execution times on empty or synthetic test databases without production data volume and concurrent traffic.
+- **Tested Versions**: Tested and verified on **PostgreSQL 16** (in automated GitHub Actions CI service containers) and **PostgreSQL 14–16**.
 
 ---
 

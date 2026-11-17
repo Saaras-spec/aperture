@@ -116,3 +116,21 @@ Aperture follows a deterministic, five-stage pipeline:
   - *Data rewrites (`MG008` ALTER TYPE, `MG009` UPDATE/DELETE without WHERE)*: Type migrations and table updates require custom dual-writing and batching logic tailored to table volume.
   - *Transaction Block Restrictions (`MG005` inside BEGIN/COMMIT)*: PostgreSQL forbids `CREATE INDEX CONCURRENTLY` inside transaction blocks. Aperture tracks transaction state statement-by-statement: when an un-concurrent index is enclosed between `BEGIN` and `COMMIT`, Aperture refuses to auto-fix and emits an explicit warning.
 
+### 3.10. Dynamic Verification Architecture & Safety Model (`aperture verify`)
+- **Decision**: `aperture verify <paths> --dsn <postgres-dsn>` executes migration statements within a transactional session against a live PostgreSQL database, measures real relation locks and table rewrites, compares outcomes against static predictions, and issues a full `ROLLBACK` at completion.
+- **Why**: Static analysis detects risky SQL structures based on grammar and version rules, but dynamic verification proves real database behavior against the PostgreSQL engine, verifying whether predicted rewrites or table locks actually manifest.
+- **Lock Inspection via `pg_locks`**:
+  - Queries `pg_locks` filtered to `pid = pg_backend_pid()` and `locktype = 'relation'`, filtering out system catalogs (`pg_catalog`, `information_schema`, `pg_toast`).
+  - Evaluates acquired relation locks against PostgreSQL's table-level lock mode hierarchy (`AccessShareLock` < `RowShareLock` < `RowExclusiveLock` < `ShareUpdateExclusiveLock` < `ShareLock` < `ShareRowExclusiveLock` < `ExclusiveLock` < `AccessExclusiveLock`).
+- **Table Rewrite Detection via `pg_class.relfilenode`**:
+  - Snapshots `pg_relation_filenode()` for user tables before and after each statement.
+  - Physical table rewrites allocate new storage files on disk with a new relfilenode. Comparing pre- and post-execution filenodes confirms whether a table was rewritten.
+- **Safety Boundaries**:
+  - *Mandatory Confirmation Flag*: Refuses execution without `--i-understand-this-runs-the-migration` to prevent accidental execution against non-throwaway databases.
+  - *Credential Masking*: Connection passwords in DSN strings are strictly masked in all reports, logs, and error messages.
+  - *Non-Transactional Handling*: Prohibited statements (`CREATE INDEX CONCURRENTLY`, `VACUUM`) are reported as `"not verifiable in a transaction"` and skipped to prevent transaction abort.
+- **Operational Limits**:
+  - Designed for throwaway test environments (e.g. CI containers or local Docker instances).
+  - Empty or small test databases verify lock modes and storage rewrites, but cannot simulate production lock contention queues or duration delays on large tables.
+
+

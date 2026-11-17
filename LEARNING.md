@@ -1344,3 +1344,172 @@ print(diff)
 #### Q5: Why is `SET lock_timeout = '2s';` placed at the top of a migration file, and why is one statement sufficient for multiple `ALTER TABLE` commands?
 **Answer:** In PostgreSQL, `SET lock_timeout = '2s'` is a session-level configuration command (GUC). Once executed, the timeout applies to all subsequent statements executed within that same database session or migration runner connection until changed or disconnected. Placing `SET lock_timeout` once at the very top of the migration file guarantees that every subsequent `ALTER TABLE` statement in that file is protected from queueing indefinitely in PostgreSQL's lock manager and exhausting application connection pools. Aperture inspects the file and ensures that `SET lock_timeout` is prepended at most once per file.
 
+---
+
+## Phase 10: Dynamic Verification (`aperture verify`)
+
+### 1. Files Created/Completed and What Each Does
+
+- **`src/aperture/verifier.py`**:
+  - Implements dynamic execution and runtime behavior analysis against live PostgreSQL databases:
+    - `mask_dsn()`: Sanitizes connection strings and URIs, masking passwords in netloc or query parameters to guarantee zero credential leakage in logs or console output.
+    - `get_database_name()`: Extracts the target database name from URIs or key-value DSNs.
+    - `is_non_transactional_statement()`: Inspects ASTs and SQL text to detect commands prohibited inside transaction blocks (`CREATE INDEX CONCURRENTLY`, `VACUUM`).
+    - `run_dynamic_verification()`: Wraps migration statements within a transactional session, measures relation locks via `pg_locks` and table rewrites via `pg_class.relfilenode`, compares observations against static rules, and rolls back the transaction.
+    - `format_verification_report()`: Generates a clear console report summarizing confirmations and static/dynamic mismatches.
+- **`src/aperture/cli.py`**:
+  - Added `aperture verify <paths> --dsn <dsn>` command.
+  - Implements the safety model: requires `--i-understand-this-runs-the-migration`, prints the database name safely before running, and prevents crashing on non-transactional statements.
+- **`tests/unit/test_verifier.py`**:
+  - Unit test suite verifying DSN password masking, database name extraction, lock strength ordering, safety flag enforcement, and mock verification execution.
+- **`tests/integration/test_dynamic_verification.py`**:
+  - Live PostgreSQL integration tests verifying:
+    - `MG005`: `CREATE INDEX` holds `ShareLock` on live PostgreSQL relations.
+    - `MG008`: `ALTER COLUMN TYPE` rewrites table storage (`relfilenode` changes) when converting types, while metadata-only operations produce expected mismatches.
+    - `MG003`: `ADD COLUMN NOT NULL DEFAULT <const>` on PostgreSQL 11+ stores defaults in catalog metadata without rewriting the table.
+    - Fixer claim verification: `VALIDATE CONSTRAINT` executed in the same transaction as `ADD CONSTRAINT ... NOT VALID` continues to hold `ShareRowExclusiveLock` until `COMMIT`.
+- **`.github/workflows/ci.yml`**:
+  - Updated the CI integration job to run `aperture verify` against the PostgreSQL service container and print the verification report in CI logs.
+
+---
+
+### 2. How Data Flows Between Components
+
+```
+CLI: aperture verify <paths> --dsn <dsn> --i-understand-this-runs-the-migration
+  │
+  ├──> Safety Guard: Verify confirmation flag is passed
+  ├──> mask_dsn() ──────────────> Print sanitized connection info to console
+  ├──> discover_files() ────────> list[Path]
+  ├──> parse_sql_file() ────────> list[ParsedStatement]
+  │
+  └──> run_dynamic_verification()
+         │
+         ├──> Open transactional connection (BEGIN)
+         ├──> Query pg_backend_pid()
+         │
+         ├──> For each statement in migration:
+         │      ├──> Check is_non_transactional_statement():
+         │      │      └──> If True: Mark "NOT_VERIFIABLE_IN_TRANSACTION", skip execution
+         │      │
+         │      ├──> Snapshot pre-statement table relfilenodes (pg_class)
+         │      ├──> Execute statement inside active transaction
+         │      ├──> Snapshot post-statement table relfilenodes (detect storage rewrite)
+         │      ├──> Query pg_locks for backend PID (relation locks)
+         │      ├──> Determine strongest lock mode per table (LOCK_STRENGTH hierarchy)
+         │      │
+         │      └──> evaluate_statement_comparison():
+         │             - MG005: Compare strongest lock to ShareLock (CONFIRMED or MISMATCH)
+         │             - MG008: Check if relfilenode changed (CONFIRMED or MISMATCH)
+         │             - MG003: Check if table storage was rewritten
+         │
+         ├──> Execute ROLLBACK (database returned to initial state)
+         │
+         └──> format_verification_report() ──> Render console report with Mismatch section
+```
+
+---
+
+### 3. Key Python Concepts Used
+
+#### Concept 1: Credential Sanitization via URL Decomposition (`urllib.parse`)
+Connection strings contain sensitive credentials. Rather than fragile substring search, Python's `urllib.parse` safely unpacks the URI components (`netloc`, `query`), masks authentication secrets, and reconstructs the sanitized string:
+
+```python
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
+
+dsn = "postgresql://app_user:secret_pw@db.internal:5432/orders?password=secret_in_query"
+parts = urlsplit(dsn)
+
+# Mask password in netloc
+user = parts.username or "user"
+host_port = f"{parts.hostname}:{parts.port}"
+masked_netloc = f"{user}:****@{host_port}"
+
+# Mask password in query parameters
+query = parse_qs(parts.query)
+if "password" in query:
+    query["password"] = ["****"]
+
+sanitized = urlunsplit(
+    (parts.scheme, masked_netloc, parts.path, urlencode(query, doseq=True), parts.fragment)
+)
+print(sanitized)  # "postgresql://app_user:****@db.internal:5432/orders?password=%2A%2A%2A%2A"
+```
+
+#### Concept 2: State Snapshot Delta Tracking
+To determine whether an external system modified a resource (e.g. physical disk rewrite), we capture a dictionary mapping before the action and compare it with the dictionary mapping after the action:
+
+```python
+# Snapshot before
+before_nodes = {"users": 16384, "orders": 16385}
+
+# Statement executes: ALTER TABLE users ALTER COLUMN age TYPE bigint;
+# Snapshot after
+after_nodes = {"users": 16390, "orders": 16385}
+
+# Detect rewrites
+rewritten = {
+    table: before_nodes[table] != after_nodes[table]
+    for table in after_nodes
+    if table in before_nodes
+}
+print(rewritten)  # {'users': True, 'orders': False}
+```
+
+#### Concept 3: Lock Mode Ranking via Mapping Hierarchy
+PostgreSQL supports 8 distinct table-level lock modes with varying conflict semantics. Ranking modes with an integer strength hierarchy enables computing the strongest lock acquired across multiple sub-operations:
+
+```python
+LOCK_STRENGTH = {
+    "AccessShareLock": 1,
+    "RowShareLock": 2,
+    "RowExclusiveLock": 3,
+    "ShareUpdateExclusiveLock": 4,
+    "ShareLock": 5,
+    "ShareRowExclusiveLock": 6,
+    "ExclusiveLock": 7,
+    "AccessExclusiveLock": 8,
+}
+
+acquired_locks = ["AccessShareLock", "ShareRowExclusiveLock", "RowExclusiveLock"]
+strongest = max(acquired_locks, key=lambda mode: LOCK_STRENGTH.get(mode, 0))
+print(strongest)  # "ShareRowExclusiveLock"
+```
+
+#### Concept 4: Context Manager Transaction Lifecycle Guarantee
+Using Python's context managers ensures that connections and cursors are properly released, and guarantees that `conn.rollback()` executes even if an unexpected exception occurs during verification:
+
+```python
+import psycopg
+
+with psycopg.connect("postgresql://user:pw@localhost/test_db", autocommit=False) as conn:
+    try:
+        with conn.cursor() as cur:
+            cur.execute("CREATE TABLE temp_test (id INT);")
+            # Run measurements...
+    finally:
+        # Guarantee database remains pristine
+        conn.rollback()
+```
+
+---
+
+### 4. Design Decisions & Interview Questions
+
+#### Q1: How does querying `pg_locks` inside the active transaction reveal the exact locking hazards of a migration statement?
+**Answer:** PostgreSQL records all active locks granted to backend sessions in the `pg_locks` catalog view. By querying `pg_locks` filtered to `l.pid = pg_backend_pid()` and `l.locktype = 'relation'` immediately after executing a statement, Aperture measures the exact table-level lock modes PostgreSQL granted to the migration session. Because locks acquired in a transaction are held until `COMMIT`, inspecting `pg_locks` before committing reveals whether the statement acquired write-blocking locks (`ShareLock`, `ShareRowExclusiveLock`) or read/write-blocking locks (`AccessExclusiveLock`).
+
+#### Q2: How does comparing `pg_class.relfilenode` before and after a statement detect whether a table was rewritten?
+**Answer:** In PostgreSQL's physical storage architecture, each relation (table) has an on-disk storage file identified by its `relfilenode` in `pg_class` (or via `pg_relation_filenode(oid)`). When an `ALTER TABLE` statement performs an operation that cannot be completed via catalog metadata updates alone (such as converting incompatible data types or adding a column in older PostgreSQL versions), PostgreSQL creates a new physical storage file on disk, rewrites every row into the new file, and updates `relfilenode` to point to the new file. Comparing the `relfilenode` before and after statement execution provides an infallible, hardware-level proof of whether a physical table rewrite took place.
+
+#### Q3: Why does `aperture verify` handle non-transactional statements (`CREATE INDEX CONCURRENTLY`) by skipping them rather than letting PostgreSQL throw an error?
+**Answer:** PostgreSQL’s executor strictly forbids `CREATE INDEX CONCURRENTLY` and `VACUUM` inside an open transaction block (`ERROR: 25001: CREATE INDEX CONCURRENTLY cannot run inside a transaction block`). If Aperture attempted to execute a concurrent index build inside its verification transaction, PostgreSQL would immediately abort the transaction, placing the connection in an error state (`InFailedSqlTransaction`) and preventing any subsequent migration statements from running. Aperture inspects the AST upfront; when a non-transactional statement is detected, it reports it as `"not verifiable in a transaction"` and safely skips execution, allowing the rest of the migration run to continue.
+
+#### Q4: Why must `aperture verify` always execute a `ROLLBACK` at the end of the run?
+**Answer:** Dynamic verification is intended to evaluate migration safety, not apply production schema changes permanently. By wrapping all statements within a single transaction and executing an explicit `conn.rollback()` upon completion, PostgreSQL's transactional DDL engine reverses all schema modifications, table creations, and index builds. The target database is returned to its exact pre-verification state, preventing migration collisions when tests are re-run.
+
+#### Q5: Why is `VALIDATE CONSTRAINT` inside the same transaction block as `ADD CONSTRAINT ... NOT VALID` an antipattern in PostgreSQL?
+**Answer:** The zero-downtime pattern of `ADD CONSTRAINT ... NOT VALID` works because the `ADD CONSTRAINT` phase acquires a strong lock (`SHARE ROW EXCLUSIVE` or `ACCESS EXCLUSIVE`) for only a few milliseconds while updating metadata without scanning existing rows. In contrast, `VALIDATE CONSTRAINT` performs a full sequential table scan, but only requires a weaker `SHARE UPDATE EXCLUSIVE` lock that allows concurrent reads and writes. However, in PostgreSQL, *all* locks acquired during a transaction are held until the transaction terminates (`COMMIT` or `ROLLBACK`). If both statements run in the same transaction block (`BEGIN ... COMMIT`), the strong exclusive lock from `ADD CONSTRAINT` is retained during the entire validation scan, completely negating the concurrency benefit and locking the table.
+
+
