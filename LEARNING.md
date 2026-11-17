@@ -1162,3 +1162,185 @@ print([p.name for p in sorted_paths])  # ['001_create_table.sql', '002_add_index
 
 #### Q5: Why is an unindexed foreign key (`MG011`) considered an operational hazard in production PostgreSQL databases?
 **Answer:** In PostgreSQL, creating a foreign key creates an index on the *referenced* (parent) table, but does *not* automatically create an index on the referencing (child) table. When a row in the parent table is deleted or its primary key is updated, PostgreSQL must check whether any rows in the child table reference that key. Without an index on the child table's foreign key columns, PostgreSQL is forced to perform a full sequential scan of the child table while holding a `SHARE ROW EXCLUSIVE` lock. On large production tables, this causes query queues, lock starvation, and connection pool exhaustion. Aperture flags `MG011` to prompt developers to create an index concurrently before adding foreign key constraints.
+
+---
+
+## Phase 9: Baseline Mode & Automated Safe Migration Rewrites
+
+### 1. Files Created/Completed and What Each Does
+
+- **`src/aperture/baseline.py`**:
+  - Implements baseline management for legacy migrations:
+    - `compute_statement_fingerprint()`: Generates a stable SHA-256 fingerprint for any SQL statement by converting the statement into canonical AST text using `pglast.stream.RawStream()`. Whitespace, comments, indentation, and line number shifts are normalized away.
+    - `Baseline` & `BaselineFinding`: Pydantic models for `.aperture-baseline.json` storing tool version, generation timestamp, and list of legacy violations identified by `(rule_id, file, fingerprint)`.
+    - `create_baseline()`, `save_baseline()`, `load_baseline()`, `apply_baseline()`: Serializes and deserializes baseline files, and flags matching active findings with `baselined=True`.
+- **`src/aperture/fixer.py`**:
+  - Automated safe rewrite engine:
+    - `detect_transaction_blocks()`: Scans parsed statements in a file to track transaction boundaries (`BEGIN` / `START TRANSACTION` vs `COMMIT` / `ROLLBACK`).
+    - `get_statement_span()`: Extracts precise character offsets for a statement (including its trailing semicolon) from `pglast.split()` slices or raw parser locations.
+    - `_rewrite_mg005()`: Mutates `IndexStmt.concurrent = True` and serializes to `CREATE INDEX CONCURRENTLY ...;`. Skips statements wrapped in transaction blocks.
+    - `_rewrite_mg006_mg007()`: Mutates constraint definitions with `skip_validation = True` (`ADD CONSTRAINT ... NOT VALID`) and synthesizes companion `ALTER TABLE ... VALIDATE CONSTRAINT ...;` statements.
+    - Prepending `SET lock_timeout = '2s';` at the top of migration files for `MG010`.
+    - `fix_sql_string()`, `fix_file()`, `fix_files()`: Generates standard unified diffs via `difflib.unified_diff`, modifying files on disk only when `write=True`.
+- **`src/aperture/cli.py`**:
+  - Added `aperture baseline --output .aperture-baseline.json` command.
+  - Added `--baseline <path>` option to `aperture check` to exclude known legacy findings from PR failure.
+  - Added `aperture fix <paths> [--write]` command to preview diffs or apply safe rewrites in place.
+- **`src/aperture/models.py` & `src/aperture/engine.py`**:
+  - Added `statement_index` to `Finding` dataclass to cleanly associate each violation with its AST node in the parsed file.
+  - Updated `compute_exit_code()` to treat `baselined=True` findings as non-failing.
+- **`src/aperture/reporters/`**:
+  - Updated console, markdown, json, and sarif reporters to report baselined counts and omit baselined findings from PR blocking failure lists.
+- **`tests/unit/test_baseline.py` & `tests/unit/test_fixer.py`**:
+  - Comprehensive unit test suites verifying fingerprint stability when lines move or whitespace changes, baseline CLI workflows, AST rewrites, transaction block detection, and dry-run vs `--write` behavior.
+
+---
+
+### 2. How Data Flows Between Components
+
+```
+1. Baseline Generation Flow:
+   CLI (aperture baseline)
+     │
+     ├──> discover_files() ────────> list[Path]
+     ├──> check_files() ───────────> list[Finding]
+     └──> create_baseline() ───────> Baseline(findings=[(rule_id, file, fingerprint)])
+            │
+            └──> save_baseline() ──> .aperture-baseline.json
+
+2. Baseline Check Flow:
+   CLI (aperture check --baseline .aperture-baseline.json)
+     │
+     ├──> check_files() ───────────> list[Finding]
+     ├──> load_baseline() ─────────> Baseline
+     ├──> apply_baseline() ────────> marks matching findings as baselined=True
+     ├──> compute_exit_code() ─────> ignores both suppressed and baselined findings
+     └──> render_report() ─────────> reports "(X baseline finding(s) excluded)"
+
+3. Auto-Fix Flow:
+   CLI (aperture fix [paths] [--write])
+     │
+     ├──> discover_files() ────────> list[Path]
+     └──> fix_files()
+            │
+            ├──> parse_sql_file() ──> list[ParsedStatement]
+            ├──> detect_transaction_blocks() ──> in_txn_map per statement
+            ├──> check_statements() ───────────> list[Finding]
+            │
+            ├──> For each finding:
+            │      - MG005: If in_txn -> record skip warning; Else mutate stmt.concurrent = True
+            │      - MG006/MG007: Mutate skip_validation = True + append VALIDATE CONSTRAINT
+            │      - MG010: Flag needs_lock_timeout = True
+            │
+            ├──> Apply AST replacements in reverse statement order (highest character offset first)
+            ├──> If needs_lock_timeout: prepend "SET lock_timeout = '2s';\n\n"
+            ├──> difflib.unified_diff(original, rewritten)
+            └──> If --write: write rewritten text to disk; Else: print unified diff
+```
+
+---
+
+### 3. Key Python Concepts Used
+
+#### Concept 1: AST Node Mutation and Serialization (`RawStream`)
+Rather than using regex string manipulation (which fails on comments, quotes, or multiline expressions), Aperture directly modifies the Python AST nodes produced by `pglast` and serializes the modified AST back to valid PostgreSQL syntax using `pglast.stream.RawStream()`:
+
+```python
+import pglast
+from pglast import stream
+
+sql = "CREATE INDEX idx_users_age ON users(age);"
+tree = pglast.parse_sql(sql)
+stmt = tree[0].stmt  # IndexStmt AST node
+
+# Mutate the AST attribute directly
+stmt.concurrent = True
+
+# Serialize mutated AST back to SQL
+rewritten_sql = stream.RawStream()(stmt)
+print(rewritten_sql)  # "CREATE INDEX CONCURRENTLY idx_users_age ON users (age)"
+```
+
+#### Concept 2: Reverse Iteration for In-Place String Slicing
+When replacing multiple non-overlapping slices within a string, replacing an earlier slice alters the character offsets of all subsequent text. Sorting the replacements in descending order of character offset ensures that earlier slice coordinates remain completely stable:
+
+```python
+text = "Alpha and Beta and Gamma"
+replacements = {
+    (0, 5): "First",  # "Alpha" at 0..5
+    (10, 14): "Second",  # "Beta" at 10..14
+    (19, 24): "Third",  # "Gamma" at 19..24
+}
+
+# Process in reverse order: highest start offset first
+for (start, end), new_val in sorted(replacements.items(), key=lambda x: x[0][0], reverse=True):
+    text = text[:start] + new_val + text[end:]
+
+print(text)  # "First and Second and Third"
+```
+
+#### Concept 3: Stable Fingerprinting via Canonical AST Hashing
+To identify a code violation across git commits without relying on brittle line numbers or superficial formatting (e.g. spaces, tabs, newlines), Aperture hashes the canonical statement AST text using SHA-256:
+
+```python
+import hashlib
+import pglast
+from pglast import stream
+
+# Two statements with completely different whitespace and casing:
+sql_a = "SELECT id,   name\nFROM users;"
+sql_b = "select id, name from users;"
+
+ast_a = stream.RawStream()(pglast.parse_sql(sql_a)[0].stmt)
+ast_b = stream.RawStream()(pglast.parse_sql(sql_b)[0].stmt)
+
+hash_a = hashlib.sha256(ast_a.strip().lower().encode("utf-8")).hexdigest()
+hash_b = hashlib.sha256(ast_b.strip().lower().encode("utf-8")).hexdigest()
+
+assert hash_a == hash_b  # Identical fingerprints regardless of whitespace or casing!
+```
+
+#### Concept 4: Standard Unified Diffs with `difflib`
+Python's standard library `difflib.unified_diff` produces standard patch-compatible diff output showing exactly what lines are removed (`-`) and added (`+`):
+
+```python
+import difflib
+
+old = "CREATE INDEX idx ON t(a);\n"
+new = "CREATE INDEX CONCURRENTLY idx ON t (a);\n"
+
+diff = "".join(
+    difflib.unified_diff(
+        old.splitlines(keepends=True),
+        new.splitlines(keepends=True),
+        fromfile="a/mig.sql",
+        tofile="b/mig.sql",
+    )
+)
+print(diff)
+# --- a/mig.sql
+# +++ b/mig.sql
+# @@ -1 +1 @@
+# -CREATE INDEX idx ON t(a);
+# +CREATE INDEX CONCURRENTLY idx ON t (a);
+```
+
+---
+
+### 4. Design Decisions & Interview Questions
+
+#### Q1: Why compute baseline fingerprints from canonical AST text instead of line numbers or raw SQL text?
+**Answer:** In database migrations, files are frequently edited to add header comments, reformat indentation, or add another migration statement earlier in the file. If baselines tracked line numbers (e.g. `migration.sql:line 4`), adding a two-line comment at the top of the file would shift the statement to line 6, invalidating the baseline and causing CI to fail on legacy code. If baselines tracked raw SQL strings, modifying trailing whitespace or SQL keywords would break the match. Normalizing through `pglast.stream.RawStream()` produces a canonical AST representation that depends solely on the mathematical structure of the query.
+
+#### Q2: Why apply statement-level replacements in reverse offset order when rewriting SQL files?
+**Answer:** Text replacement in a string changes the length of the string. If statement 0 (located at offset 10..50) is replaced with a longer string (e.g. 80 characters), all subsequent character offsets in the file shift forward by +40 characters. If replacements were applied from top to bottom, the offsets computed for statement 1 during parsing would now point to the wrong characters, corrupting the SQL file. Sorting replacements by statement index in descending order ensures that modifying statement $N$ only alters characters after statement $N-1$, leaving the start and end offsets of statement $N-1$ completely intact.
+
+#### Q3: Why does `CREATE INDEX CONCURRENTLY` fail inside a transaction block, and how does Aperture handle it during auto-fix?
+**Answer:** PostgreSQL builds standard indexes in a single pass under a `SHARE` lock. However, `CREATE INDEX CONCURRENTLY` builds indexes in two distinct table-scanning passes and waits for all concurrent transactions referencing the table to terminate between passes. Because it must coordinate multiple internal transaction snapshots, PostgreSQL’s executor explicitly forbids `CREATE INDEX CONCURRENTLY` within an explicit transaction block (`ERROR: CREATE INDEX CONCURRENTLY cannot run inside a transaction block`). Aperture inspects statement ASTs for `TransactionStmt` nodes (`BEGIN` and `COMMIT`): if a `CREATE INDEX` statement occurs within an active transaction block, Aperture skips the auto-fix and emits an explicit warning instructing the developer to move the index creation outside the transaction block.
+
+#### Q4: Why is auto-fix opt-in (`--write` required) and why does Aperture deliberately refuse to auto-fix rules like `MG001` (DROP TABLE / DROP COLUMN)?
+**Answer:** Automated code modifications to production database migrations carry operational risks. Running `aperture fix` by default outputs a unified diff so developers can inspect and verify proposed changes before committing them. Furthermore, destructive operations such as `MG001` (`DROP TABLE` / `DROP COLUMN`) cannot be safely rewritten automatically because safely dropping a column requires a multi-step application deprecation lifecycle (stopping application writes, verifying zero reads, deploying code, then dropping). Auto-fixing `DROP` by commenting it out or deleting it could lead to schema divergence or masked errors. Aperture only auto-fixes operations with deterministic, non-destructive safe equivalents (`CONCURRENTLY`, `NOT VALID`, and `lock_timeout`).
+
+#### Q5: Why is `SET lock_timeout = '2s';` placed at the top of a migration file, and why is one statement sufficient for multiple `ALTER TABLE` commands?
+**Answer:** In PostgreSQL, `SET lock_timeout = '2s'` is a session-level configuration command (GUC). Once executed, the timeout applies to all subsequent statements executed within that same database session or migration runner connection until changed or disconnected. Placing `SET lock_timeout` once at the very top of the migration file guarantees that every subsequent `ALTER TABLE` statement in that file is protected from queueing indefinitely in PostgreSQL's lock manager and exhausting application connection pools. Aperture inspects the file and ensures that `SET lock_timeout` is prepended at most once per file.
+

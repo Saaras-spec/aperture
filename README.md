@@ -86,6 +86,15 @@ aperture check --base-ref origin/main
 aperture check --format markdown --output pr_comment.md
 aperture check --format sarif --output results.sarif
 
+# Filter known legacy findings using a baseline snapshot
+aperture check --baseline .aperture-baseline.json
+
+# Preview automated safe rewrites as a unified diff
+aperture fix migrations/
+
+# Apply safe rewrites in place
+aperture fix migrations/ --write
+
 # Enable optional AI-powered plain-English explanations and migration plans
 aperture check --explain
 ```
@@ -168,9 +177,73 @@ Follow these exact steps to verify the AI explainer with a real key:
 | Command | Description |
 | :--- | :--- |
 | `aperture check [PATHS...]` | Scan migration files for dangerous operations |
+| `aperture baseline [PATHS...]` | Snapshot current findings into `.aperture-baseline.json` |
+| `aperture fix [PATHS...] [--write]` | Preview or apply automated AST safe migration rewrites |
 | `aperture list-rules` | Display a catalog table of all registered rules |
 | `aperture explain <RULE_ID>` | Show in-depth explanation, locking risk, and safe alternative |
 | `aperture init` | Create a starter `aperture.yml` configuration file |
+
+---
+
+## 📌 Baseline Mode
+
+When adopting Aperture on existing legacy codebases with hundreds of historical migrations, you may not want to immediately fail CI on pre-existing legacy statements. **Baseline mode** lets you record current findings as an accepted baseline, ensuring PR checks only fail on newly introduced risky operations.
+
+### 1. Create a Baseline Snapshot
+
+```bash
+# Record all current migration findings into a baseline file
+aperture baseline --output .aperture-baseline.json
+```
+
+Aperture creates stable fingerprints from the canonical AST of each statement (ignoring whitespace, indentation, comments, and line number shifts). If lines move or non-semantic formatting changes occur, fingerprints remain unchanged.
+
+### 2. Check Against the Baseline
+
+```bash
+# Run CI check filtering out baselined legacy findings
+aperture check --baseline .aperture-baseline.json
+```
+
+- Baselined findings are excluded from the failure count and detail outputs.
+- The summary indicates how many findings were excluded: `(3 baseline finding(s) excluded)`.
+- CI exits non-zero **only** if new, un-baselined violations at or above `fail_on` are introduced.
+
+---
+
+## 🛠️ Automated Safe Rewrites (`aperture fix`)
+
+Aperture can automatically rewrite risky statements using non-blocking, zero-downtime PostgreSQL migration patterns. Rewrites are performed using PostgreSQL AST node mutations (`pglast`), never fragile regex string replacements.
+
+### 1. Preview Rewrites (Dry Run by Default)
+
+```bash
+aperture fix migrations/
+```
+
+By default, `aperture fix` is completely non-destructive: it outputs a standard unified diff of proposed changes to `stdout` without touching any files on disk.
+
+### 2. Apply Rewrites in Place
+
+```bash
+aperture fix migrations/ --write
+```
+
+Rewrites the migration files in place with safe alternatives.
+
+### Supported Auto-Fix Rules
+
+| Rule | Unsafe Pattern | Safe AST Rewrite Applied |
+| :--- | :--- | :--- |
+| **MG005** | `CREATE INDEX idx ON t(col);` | `CREATE INDEX CONCURRENTLY idx ON t (col);` |
+| **MG006** | `ALTER TABLE t ADD CONSTRAINT fk FOREIGN KEY (c) REFERENCES r(id);` | `ALTER TABLE t ADD CONSTRAINT fk FOREIGN KEY (c) REFERENCES r (id) NOT VALID;`<br>`ALTER TABLE t VALIDATE CONSTRAINT fk;` |
+| **MG007** | `ALTER TABLE t ADD CONSTRAINT chk CHECK (c > 0);` | `ALTER TABLE t ADD CONSTRAINT chk CHECK (c > 0) NOT VALID;`<br>`ALTER TABLE t VALIDATE CONSTRAINT chk;` |
+| **MG010** | `ALTER TABLE t ADD COLUMN c INT;` *(missing lock timeout)* | Inserts `SET lock_timeout = '2s';` at the top of the migration file. |
+
+### Limitations & Transaction Blocks
+
+- **Transaction Block Restrictions**: In PostgreSQL, `CREATE INDEX CONCURRENTLY` cannot run inside an explicit transaction block (`BEGIN` ... `COMMIT`). If Aperture detects that a `CREATE INDEX` statement is wrapped inside a transaction block, it skips the rewrite and outputs an explicit warning to `stderr` explaining that the index creation must be moved outside the transaction.
+- **Opt-In Safety**: Rewriting SQL migrations can impact deployment choreography. Auto-fix is strictly opt-in and requires the `--write` flag to modify files on disk. Destructive operations (such as `DROP TABLE` or `DROP COLUMN`) require manual engineering decisions and are intentionally never auto-fixed.
 
 ---
 

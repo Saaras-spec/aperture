@@ -102,3 +102,17 @@ Aperture follows a deterministic, five-stage pipeline:
 - **Known Limitations & Boundaries**:
   - *Dynamic SQL & PL/pgSQL*: Aperture parses static SQL ASTs via `pglast`. DDL statements generated inside dynamic SQL string concatenations or `DO $$ ... $$` blocks cannot be inspected statically.
   - *Partial Migration Sets*: When scanning only a subset of migrations (e.g. only files touched in a small PR), `SchemaState` only knows about objects defined or modified within that scanned set. Preexisting production schema objects are not inferred unless defined in the scanned history.
+
+### 3.8. Baseline Mode Architecture
+- **Decision**: `aperture baseline --output .aperture-baseline.json` records findings identified by `(rule_id, file, fingerprint)`.
+- **Stable Fingerprinting**: Fingerprints are derived by normalizing the SQL statement via `pglast.stream.RawStream` into canonical AST text, stripping leading/trailing whitespace, and hashing with SHA-256. This deliberately excludes line numbers.
+- **Why**: If a developer adds a comment, re-indents SQL, or adds a migration statement earlier in the file, line numbers change. AST-based fingerprinting ensures that existing baselined issues remain recognized and excluded from CI failure, while new or modified statements are accurately flagged.
+
+### 3.9. Auto-Fix Engine & Opt-In Boundaries
+- **Decision**: `aperture fix <paths> [--write]` automatically rewrites fixable unsafe patterns using PostgreSQL AST node mutations, printing a unified diff by default and modifying files only when `--write` is explicitly passed.
+- **Why Opt-In**: Modifying production database migrations can alter transaction semantics and deployment choreography. A dry-run preview guarantees transparency, while `--write` forces conscious developer intent.
+- **Deliberate Non-Fixes**:
+  - *Destructive operations (`MG001` DROP TABLE / DROP COLUMN)*: Dropping schema objects requires careful application-level deprecation cycles, data backups, and domain context. Automated deletion could lead to catastrophic data loss.
+  - *Data rewrites (`MG008` ALTER TYPE, `MG009` UPDATE/DELETE without WHERE)*: Type migrations and table updates require custom dual-writing and batching logic tailored to table volume.
+  - *Transaction Block Restrictions (`MG005` inside BEGIN/COMMIT)*: PostgreSQL forbids `CREATE INDEX CONCURRENTLY` inside transaction blocks. Aperture tracks transaction state statement-by-statement: when an un-concurrent index is enclosed between `BEGIN` and `COMMIT`, Aperture refuses to auto-fix and emits an explicit warning.
+
