@@ -199,3 +199,146 @@ def test_cli_check_with_explain_flag_fallback_without_keys(
     assert "MG001" in result.output
     assert "Dropping column 'email'" in result.output
     assert "aperture: AI explanation unavailable" in result.output
+
+
+def test_cli_check_baseline_file_error_exits_2(tmp_path: Path) -> None:
+    """Check with invalid or missing baseline file exits 2."""
+    migration = tmp_path / "009_mig.sql"
+    migration.write_text("CREATE TABLE t (id int);", encoding="utf-8")
+
+    res = runner.invoke(app, ["check", str(migration), "--baseline", "does_not_exist.json"])
+    assert res.exit_code == 2
+    assert "Baseline error" in res.output
+
+
+def test_cli_check_output_write_error_exits_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Check exits 2 when writing report to output file fails with OSError."""
+    migration = tmp_path / "010_mig.sql"
+    migration.write_text("CREATE TABLE t (id int);", encoding="utf-8")
+
+    def mock_write_text(*_: object, **__: object) -> int:
+        raise OSError("Disk full")
+
+    monkeypatch.setattr(Path, "write_text", mock_write_text)
+    out_file = tmp_path / "out.txt"
+    res = runner.invoke(app, ["check", str(migration), "--output", str(out_file)])
+    assert res.exit_code == 2
+    assert "Failed to write output file" in res.output
+
+
+def test_cli_init_write_error_exits_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Init exits 2 when writing aperture.yml fails with OSError."""
+    monkeypatch.chdir(tmp_path)
+
+    def mock_write_text(*_: object, **__: object) -> int:
+        raise OSError("Permission denied")
+
+    monkeypatch.setattr(Path, "write_text", mock_write_text)
+    res = runner.invoke(app, ["init"])
+    assert res.exit_code == 2
+    assert "Failed to write configuration file" in res.output
+
+
+def test_cli_baseline_bad_config_exits_2(tmp_path: Path) -> None:
+    """Baseline exits 2 on configuration error."""
+    bad_cfg = tmp_path / "bad.yml"
+    bad_cfg.write_text("fail_on: INVALID\n", encoding="utf-8")
+    res = runner.invoke(app, ["baseline", "--config", str(bad_cfg)])
+    assert res.exit_code == 2
+    assert "Configuration error" in res.output
+
+
+def test_cli_baseline_discovery_error_exits_2() -> None:
+    """Baseline exits 2 on file discovery error."""
+    res = runner.invoke(app, ["baseline", "path/that/definitely/does/not/exist"])
+    assert res.exit_code == 2
+    assert "File discovery error" in res.output
+
+
+def test_cli_baseline_no_files_found(tmp_path: Path) -> None:
+    """Baseline exits 0 when no migration files are found."""
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    res = runner.invoke(app, ["baseline", str(empty_dir)])
+    assert res.exit_code == 0
+    assert "No migration files found to baseline" in res.output
+
+
+def test_cli_baseline_sql_parse_error_exits_2(tmp_path: Path) -> None:
+    """Baseline exits 2 when a migration file has syntax errors."""
+    bad_sql = tmp_path / "bad.sql"
+    bad_sql.write_text("SELECT FROM WHERE;", encoding="utf-8")
+    res = runner.invoke(app, ["baseline", str(bad_sql)])
+    assert res.exit_code == 2
+    assert "SQL parse error" in res.output
+
+
+def test_cli_baseline_save_os_error_exits_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Baseline exits 2 when saving baseline JSON fails with OSError."""
+    mig = tmp_path / "mig.sql"
+    mig.write_text("CREATE TABLE t (id int);", encoding="utf-8")
+
+    def mock_save(*_: object, **__: object) -> None:
+        raise OSError("Read-only filesystem")
+
+    import aperture.baseline
+
+    monkeypatch.setattr(aperture.baseline, "save_baseline", mock_save)
+    res = runner.invoke(app, ["baseline", str(mig)])
+    assert res.exit_code == 2
+    assert "Failed to write baseline file" in res.output
+
+
+def test_cli_fix_bad_config_exits_2(tmp_path: Path) -> None:
+    """Fix exits 2 on configuration error."""
+    bad_cfg = tmp_path / "bad.yml"
+    bad_cfg.write_text("fail_on: INVALID\n", encoding="utf-8")
+    res = runner.invoke(app, ["fix", "--config", str(bad_cfg)])
+    assert res.exit_code == 2
+    assert "Configuration error" in res.output
+
+
+def test_cli_fix_discovery_error_exits_2() -> None:
+    """Fix exits 2 on file discovery error."""
+    res = runner.invoke(app, ["fix", "path/that/definitely/does/not/exist"])
+    assert res.exit_code == 2
+    assert "File discovery error" in res.output
+
+
+def test_cli_fix_execution_error_exits_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix exits 2 when fix_files raises an unexpected exception."""
+    mig = tmp_path / "mig.sql"
+    mig.write_text("CREATE TABLE t (id int);", encoding="utf-8")
+
+    def mock_fix_files(*_: object, **__: object) -> list[object]:
+        raise RuntimeError("Unexpected engine crash")
+
+    import aperture.fixer
+
+    monkeypatch.setattr(aperture.fixer, "fix_files", mock_fix_files)
+    res = runner.invoke(app, ["fix", str(mig)])
+    assert res.exit_code == 2
+    assert "Error during auto-fix" in res.output
+
+
+def test_cli_fix_write_mode_zero_files_modified(tmp_path: Path) -> None:
+    """Fix with --write on already-clean file reports no fixable issues found."""
+    mig = tmp_path / "clean.sql"
+    mig.write_text("CREATE TABLE t (id int);", encoding="utf-8")
+    res = runner.invoke(app, ["fix", str(mig), "--write"])
+    assert res.exit_code == 0
+    assert "No fixable issues found." in res.output
+
+
+def test_cli_main_callable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify main() function executes without error."""
+    from aperture.cli import main
+
+    monkeypatch.setattr("sys.argv", ["aperture", "--help"])
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == 0

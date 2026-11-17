@@ -184,3 +184,44 @@ def test_cli_baseline_and_check_workflow(tmp_path: Path) -> None:
     assert "MG001" in result_check_new.stdout
     assert "1 baselined" in result_check_new.stdout
     assert "Result: FAILED" in result_check_new.stdout
+
+
+def test_baseline_duplicate_identical_statements_in_one_file(tmp_path: Path) -> None:
+    """A single baselined entry must NOT hide a newly added duplicate identical statement."""
+    mig = tmp_path / "002_duplicates.sql"
+    # Initial state: only one risky statement
+    mig.write_text("CREATE INDEX idx_dup ON users (email);\n")
+
+    bl_file = tmp_path / ".aperture-baseline.json"
+    res_bl = runner.invoke(app, ["baseline", str(mig), "--output", str(bl_file)])
+    assert res_bl.exit_code == 0
+    assert "Recorded 1 finding(s)" in res_bl.stdout
+
+    # Now add a duplicate of the identical statement to the same file
+    mig.write_text(
+        "CREATE INDEX idx_dup ON users (email);\nCREATE INDEX idx_dup ON users (email);\n"
+    )
+
+    # Check with baseline
+    findings = check_files([mig], Config())
+    assert len(findings) == 2
+
+    bl = load_baseline(bl_file)
+    new_findings, baselined = filter_findings_with_baseline(findings, bl)
+
+    # Exactly 1 finding is baselined; the newly added duplicate is NOT hidden
+    assert len(baselined) == 1
+    assert baselined[0].baselined is True
+    assert len(new_findings) == 1
+    assert new_findings[0].baselined is False
+    assert new_findings[0].rule_id == "MG005"
+
+    # Exit code must fail because of the unbaselined duplicate
+    exit_code = compute_exit_code(findings, Severity.ERROR)
+    assert exit_code == 1
+
+    # CLI check must also report failure and show 1 baselined
+    res_cli = runner.invoke(app, ["check", str(mig), "--baseline", str(bl_file)])
+    assert res_cli.exit_code == 1
+    assert "1 baselined" in res_cli.stdout
+    assert "Result: FAILED" in res_cli.stdout

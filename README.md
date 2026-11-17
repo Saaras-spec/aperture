@@ -209,6 +209,12 @@ aperture check --baseline .aperture-baseline.json
 - The summary indicates how many findings were excluded: `(3 baseline finding(s) excluded)`.
 - CI exits non-zero **only** if new, un-baselined violations at or above `fail_on` are introduced.
 
+### Duplicate Statement Handling (Multiset Accounting)
+
+Aperture tracks baselined findings using occurrence-aware frequency counts (`(rule_id, file, fingerprint)`):
+- If a migration file contains one instance of an unsafe statement recorded in the baseline, and a developer adds a second identical statement to the same file, the baseline covers only the single original instance.
+- The newly added duplicate is detected as a new violation and causes checks to fail, ensuring that existing baseline entries cannot silently hide newly introduced duplicate risks.
+
 ---
 
 ## 🛠️ Automated Safe Rewrites (`aperture fix`)
@@ -345,7 +351,7 @@ rules:
 ## 🗺️ Roadmap
 
 - [x] **Schema-Aware Analysis with PostgreSQL Version Awareness**: Track table and column state evolution across historical migrations and customize locking analysis based on target PostgreSQL version behavior.
-- [ ] **Baseline Mode and Auto-Fix** *(Planned)*: Snapshot legacy migration directories to baseline existing violations, with automated remediation (`aperture fix`) to generate non-blocking migration code.
+- [x] **Baseline Mode and Auto-Fix**: Snapshot legacy migration directories to baseline existing violations, with automated remediation (`aperture fix`) to generate non-blocking migration code.
 - [ ] **Dynamic Verification (`aperture verify`)** *(Planned)*: Apply migrations on a throwaway PostgreSQL database and record the locks each statement acquires and whether tables are rewritten, to check the static rules against real behaviour.
 - [ ] **Real-World Benchmark** *(Planned)*: Run Aperture on open-source projects that use plain SQL migration files and report findings, false-positive rate and speed.
 
