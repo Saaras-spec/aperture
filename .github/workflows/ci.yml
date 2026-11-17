@@ -38,11 +38,15 @@ jobs:
         run: pytest --cov=src/aperture --cov-report=term-missing tests/unit
 
   integration:
-    name: PostgreSQL Integration Tests
+    name: PostgreSQL ${{ matrix.postgres-version }} Integration Tests
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres-version: ["14", "15", "16"]
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:${{ matrix.postgres-version }}-alpine
         env:
           POSTGRES_USER: aperture_user
           POSTGRES_PASSWORD: aperture_password
