@@ -7,12 +7,15 @@ via pg_locks and table rewrites via pg_class.relfilenode, then rolling back.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+from pglast import enums, visitors
 
 from aperture.config import Config
 from aperture.engine import check_statements
@@ -79,6 +82,60 @@ def get_database_name(dsn: str) -> str:
         return match.group(1)
 
     return "unknown_database"
+
+
+def get_dsn_host(dsn: str) -> str:
+    """Extract hostname from a PostgreSQL connection URI or key-value string."""
+    if "://" in dsn:
+        try:
+            parts = urlsplit(dsn)
+            return parts.hostname or ""
+        except Exception:
+            pass
+
+    match = re.search(r"\bhost\s*=\s*['\"]?([^\s'\"]+)['\"]?", dsn, flags=re.IGNORECASE)
+    if match:
+        return match.group(1)
+
+    return ""
+
+
+def is_local_host(dsn: str) -> bool:
+    """Check if the DSN targets a local database host.
+
+    Local hosts include localhost, 127.0.0.1, ::1, or local Unix sockets.
+    """
+    host = get_dsn_host(dsn).lower().strip()
+    if not host or host.startswith("/"):
+        # Empty host or unix socket path is local
+        return True
+    return host in {"localhost", "127.0.0.1", "::1"}
+
+
+class _TableFinder(visitors.Visitor):
+    """Visitor that extracts all relation names referenced in an AST statement."""
+
+    def __init__(self) -> None:
+        self.tables: set[str] = set()
+
+    def visit_RangeVar(self, _ancestors: Any, node: Any) -> None:  # noqa: N802
+        relname = getattr(node, "relname", None)
+        if relname:
+            self.tables.add(str(relname).lower())
+
+    def visit_DropStmt(self, _ancestors: Any, node: Any) -> None:  # noqa: N802
+        if getattr(node, "removeType", None) == enums.ObjectType.OBJECT_TABLE:
+            for obj in getattr(node, "objects", ()) or ():
+                if obj and hasattr(obj[-1], "sval"):
+                    self.tables.add(str(obj[-1].sval).lower())
+
+
+def extract_referenced_tables(stmt: Any) -> set[str]:
+    """Extract lowercased names of all tables explicitly referenced in a statement AST."""
+    finder = _TableFinder()
+    with contextlib.suppress(Exception):
+        finder(stmt)
+    return finder.tables
 
 
 @dataclass
@@ -230,6 +287,10 @@ def format_verification_report(report: VerificationReport) -> str:
         )
         lines.append(f"\n{status_badge} line {sv.line} in {Path(sv.file).name}: {sv.sql[:70]}...")
 
+        if sv.status == "FAILED":
+            lines.append(f"   ❌ Execution failed: {sv.error_message}")
+            continue
+
         if sv.non_transactional:
             lines.append("   ⚠️  Statement cannot run inside a transaction block (CONCURRENTLY).")
             lines.append("       Skipped dynamic execution to prevent aborting verify transaction.")
@@ -330,7 +391,7 @@ def run_dynamic_verification(
                     report.statements.append(sv)
                     continue
 
-                # 1. Snapshot table relfilenodes before statement
+                # 1. Snapshot table relfilenodes and relation locks before statement
                 # We filter to user tables in public schema
                 cur.execute(
                     """
@@ -342,6 +403,20 @@ def run_dynamic_verification(
                     """
                 )
                 before_filenodes: dict[str, int | None] = dict(cur.fetchall())
+
+                cur.execute(
+                    """
+                    SELECT c.relname, l.mode
+                    FROM pg_locks l
+                    JOIN pg_class c ON l.relation = c.oid
+                    JOIN pg_namespace n ON c.relnamespace = n.oid
+                    WHERE l.pid = %s
+                      AND l.locktype = 'relation'
+                      AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast');
+                    """,
+                    (backend_pid,),
+                )
+                before_locks: set[tuple[str, str]] = set(cur.fetchall())
 
                 # 2. Execute statement inside the active transaction
                 try:
@@ -366,11 +441,15 @@ def run_dynamic_verification(
                 )
                 after_filenodes: dict[str, int | None] = dict(cur.fetchall())
 
+                ref_tables = extract_referenced_tables(ps.stmt)
                 for tbl, aft_fn in after_filenodes.items():
                     if tbl in before_filenodes:
                         bef_fn = before_filenodes[tbl]
                         # A changed filenode proves the table storage file was rewritten
-                        sv.table_rewrites[tbl] = bool(bef_fn != aft_fn)
+                        if bef_fn != aft_fn:
+                            sv.table_rewrites[tbl] = True
+                        elif tbl.lower() in ref_tables:
+                            sv.table_rewrites[tbl] = False
 
                 # 4. Query pg_locks for relation locks held by this backend
                 cur.execute(
@@ -387,12 +466,21 @@ def run_dynamic_verification(
                 )
                 raw_locks = cur.fetchall()
 
+                # Attribute locks per-statement:
+                # Include locks newly acquired by this statement, or locks on tables
+                # explicitly referenced in this statement AST (e.g. successive statements
+                # targeting the same table). Exclude leftover locks from earlier statements
+                # on unrelated tables.
                 locks_by_table: dict[str, list[str]] = {}
                 for tbl, mode in raw_locks:
-                    strength = LOCK_STRENGTH.get(mode, 0)
-                    lock_obj = StatementLock(table_name=tbl, mode=mode, strength=strength)
-                    sv.locks_acquired.append(lock_obj)
-                    locks_by_table.setdefault(tbl, []).append(mode)
+                    tbl_lower = tbl.lower()
+                    is_new = (tbl, mode) not in before_locks
+                    is_referenced = tbl_lower in ref_tables
+                    if is_new or is_referenced:
+                        strength = LOCK_STRENGTH.get(mode, 0)
+                        lock_obj = StatementLock(table_name=tbl, mode=mode, strength=strength)
+                        sv.locks_acquired.append(lock_obj)
+                        locks_by_table.setdefault(tbl, []).append(mode)
 
                 for tbl, modes in locks_by_table.items():
                     strongest = max(modes, key=lambda m: LOCK_STRENGTH.get(m, 0))
@@ -415,8 +503,15 @@ def verify_file(
     dsn: str,
     config: Config | None = None,
     schema: SchemaState | None = None,
+    allow_remote: bool = False,
 ) -> VerificationReport:
     """Run dynamic verification for a single migration file on disk."""
+    if not is_local_host(dsn) and not allow_remote:
+        raise ValueError(
+            f"Refusing to run dynamic verification against non-local host '{get_dsn_host(dsn)}'. "
+            "Pass allow_remote=True or --allow-remote to permit remote execution."
+        )
+
     path = Path(file_path)
     if not path.is_file():
         raise FileNotFoundError(f"Migration file not found: {path}")
@@ -435,8 +530,15 @@ def verify_files(
     file_paths: Sequence[str | Path],
     dsn: str,
     config: Config | None = None,
+    allow_remote: bool = False,
 ) -> VerificationReport:
     """Run dynamic verification across multiple migration files in temporal order."""
+    if not is_local_host(dsn) and not allow_remote:
+        raise ValueError(
+            f"Refusing to run dynamic verification against non-local host '{get_dsn_host(dsn)}'. "
+            "Pass allow_remote=True or --allow-remote to permit remote execution."
+        )
+
     if config is None:
         config = Config()
 

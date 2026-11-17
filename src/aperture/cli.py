@@ -568,6 +568,13 @@ def verify(
             help="Acknowledge that dynamic verification executes migrations on the target DB.",
         ),
     ] = False,
+    allow_remote: Annotated[
+        bool,
+        typer.Option(
+            "--allow-remote",
+            help="Allow dynamic verification against a non-local PostgreSQL host.",
+        ),
+    ] = False,
     config: Annotated[
         Path | None,
         typer.Option(
@@ -603,9 +610,24 @@ def verify(
     from aperture.verifier import (
         format_verification_report,
         get_database_name,
+        get_dsn_host,
+        is_local_host,
         mask_dsn,
         verify_files,
     )
+
+    if not is_local_host(dsn) and not allow_remote:
+        host = get_dsn_host(dsn)
+        sanitized_dsn = mask_dsn(dsn)
+        typer.secho(
+            f"Safety error: Refusing to run dynamic verification against non-local host '{host}'.\n"
+            f"Target: {sanitized_dsn}\n"
+            "Dynamic verification executes migration statements. For remote databases, you must "
+            "explicitly pass --allow-remote alongside --i-understand-this-runs-the-migration.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
 
     # 1. Load config
     try:
@@ -632,7 +654,7 @@ def verify(
 
     # 4. Run dynamic verification
     try:
-        report = verify_files(discovered, dsn=dsn, config=cfg)
+        report = verify_files(discovered, dsn=dsn, config=cfg, allow_remote=allow_remote)
     except Exception as err:
         sanitized_msg = mask_dsn(str(err))
         typer.secho(f"Dynamic verification failed:\n{sanitized_msg}", fg=typer.colors.RED, err=True)

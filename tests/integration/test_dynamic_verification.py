@@ -211,3 +211,48 @@ def test_fixer_claim_validate_constraint_in_same_transaction_holds_earlier_lock(
 
         # Roll back cleanly
         session.rollback()
+
+
+def test_dynamic_verification_locks_per_statement_not_cumulative(
+    pg_connection_string: str,
+    db_conn: psycopg.Connection,
+) -> None:
+    """Proves that locks are reported per statement and NOT cumulative across the transaction.
+
+    Statement 1 acquires locks on table dyn_test_locks_a.
+    Statement 2 acquires locks on table dyn_test_locks_b.
+    Even though both statements execute within the same transaction block, Statement 2
+    must NOT have dyn_test_locks_a attributed to it in locks_acquired or strongest_locks.
+    """
+    with db_conn.cursor() as cur:
+        cur.execute("DROP TABLE IF EXISTS dyn_test_locks_b CASCADE;")
+        cur.execute("DROP TABLE IF EXISTS dyn_test_locks_a CASCADE;")
+        cur.execute("CREATE TABLE dyn_test_locks_a (id INT PRIMARY KEY);")
+        cur.execute("CREATE TABLE dyn_test_locks_b (id INT PRIMARY KEY);")
+
+    sql = """
+    ALTER TABLE dyn_test_locks_a ADD COLUMN col_a INT;
+    ALTER TABLE dyn_test_locks_b ADD COLUMN col_b INT;
+    """
+    stmts = parse_sql_string(sql)
+
+    report = run_dynamic_verification(
+        statements=stmts,
+        dsn=pg_connection_string,
+        file_path="005_multi_table_locks.sql",
+        config=Config(),
+    )
+
+    assert report.total_statements == 2
+    stmt1 = report.statements[0]
+    stmt2 = report.statements[1]
+
+    # Statement 1 must report locks on dyn_test_locks_a, NOT dyn_test_locks_b
+    assert "dyn_test_locks_a" in stmt1.strongest_locks
+    assert "dyn_test_locks_b" not in stmt1.strongest_locks
+
+    # Statement 2 must report locks on dyn_test_locks_b, and MUST NOT attribute
+    # dyn_test_locks_a to Statement 2
+    assert "dyn_test_locks_b" in stmt2.strongest_locks
+    assert "dyn_test_locks_a" not in stmt2.strongest_locks
+    assert all(lock.table_name != "dyn_test_locks_a" for lock in stmt2.locks_acquired)
