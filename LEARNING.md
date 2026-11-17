@@ -1512,4 +1512,141 @@ with psycopg.connect("postgresql://user:pw@localhost/test_db", autocommit=False)
 #### Q5: Why is `VALIDATE CONSTRAINT` inside the same transaction block as `ADD CONSTRAINT ... NOT VALID` an antipattern in PostgreSQL?
 **Answer:** The zero-downtime pattern of `ADD CONSTRAINT ... NOT VALID` works because the `ADD CONSTRAINT` phase acquires a strong lock (`SHARE ROW EXCLUSIVE` or `ACCESS EXCLUSIVE`) for only a few milliseconds while updating metadata without scanning existing rows. In contrast, `VALIDATE CONSTRAINT` performs a full sequential table scan, but only requires a weaker `SHARE UPDATE EXCLUSIVE` lock that allows concurrent reads and writes. However, in PostgreSQL, *all* locks acquired during a transaction are held until the transaction terminates (`COMMIT` or `ROLLBACK`). If both statements run in the same transaction block (`BEGIN ... COMMIT`), the strong exclusive lock from `ADD CONSTRAINT` is retained during the entire validation scan, completely negating the concurrency benefit and locking the table.
 
+---
+
+## Phase 11: Real-World Migration Benchmark Suite
+
+### 1. Files Created and Their Purpose
+
+- `scripts/benchmark.py`: Core automated benchmarking pipeline. Discovers forward PostgreSQL `.sql` migration files across cloned open-source repositories, excludes rollback/down migrations, parses statements using `pglast`, runs Aperture's schema-aware rule engine, records parse failures transparently, measures execution duration, and generates structured `results/benchmark.json` and `results/benchmark.md`.
+- `scripts/__init__.py`: Package initialization for the scripts module to ensure clean package resolution and strict type checking.
+- `tests/unit/test_benchmark.py`: Comprehensive unit test suite covering file discovery, down migration exclusion patterns, error handling on malformed SQL, result aggregation, and JSON/Markdown generation.
+- `results/benchmark.json`: Full machine-readable dataset containing per-repository and aggregate metrics, parse failure details, and every finding reported across all tested projects.
+- `results/benchmark.md`: Executive summary and detailed benchmark tables documenting throughput, scale, rule distributions, and parse logs.
+
+---
+
+### 2. Architecture & Data Flow
+
+```
+Cloned Repositories (e.g. coder, crates-io, supabase-auth)
+                       │
+                       ▼
+           [ discover_migration_files() ]
+           Excludes *.down.sql, down/, rollback/
+                       │
+                       ▼
+           [ benchmark_repo() per repository ]
+                       │
+         ┌─────────────┴─────────────┐
+         ▼                           ▼
+[ parse_sql_file() ]         [ Parse Failure? ]
+Uses PostgreSQL parser               │
+         │                           ▼
+         ▼                 Recorded in ParseFailureInfo
+[ check_statements() ]     (Preserved, never hidden)
+SchemaState + 12 rules
+         │
+         ▼
+[ aggregate_suite_results() ]
+Combines findings, calculates total statements/sec
+         │
+         ├───────────────────────────┐
+         ▼                           ▼
+results/benchmark.json       results/benchmark.md
+(Machine-readable raw data)   (Markdown report tables)
+```
+
+---
+
+### 3. Key Python Concepts Used
+
+#### Concept 1: In-Place Directory Pruning with `os.walk`
+When scanning repository trees, `os.walk(top)` yields `(root, dirs, files)` at each level. Modifying `dirs[:]` in-place prevents `os.walk` from descending into unwanted subtrees (such as `.git`, `.venv`, or `down/` rollback directories), dramatically speeding up filesystem traversal:
+
+```python
+import os
+
+for root, dirs, files in os.walk(repo_path):
+    # In-place slice assignment prunes directory traversal before walking
+    dirs[:] = [d for d in dirs if d not in {".git", ".venv", "down", "rollback"}]
+    for file in files:
+        if file.endswith(".sql"):
+            print(f"Discovered forward migration: {file}")
+```
+
+#### Concept 2: High-Resolution Monotonic Timing with `time.perf_counter()`
+`time.time()` measures wall-clock time and is subject to system clock adjustments (NTP sync, leap seconds). For performance benchmarking and throughput calculation, `time.perf_counter()` provides the highest available resolution monotonic clock that never runs backwards:
+
+```python
+import time
+
+start_time = time.perf_counter()
+# Execute parsing and rule engine...
+duration = time.perf_counter() - start_time
+
+statements_per_sec = total_statements / duration if duration > 0 else 0.0
+print(f"Processed {total_statements} statements in {duration:.3f}s ({statements_per_sec:.1f} stmts/s)")
+```
+
+#### Concept 3: Nested Dataclass Serialization with `dataclasses.asdict`
+Aperture models its benchmark data as nested `@dataclass` hierarchies (`BenchmarkSuiteResult` $\to$ `RepoBenchmarkResult` $\to$ `BenchmarkFindingInfo`). Converting this complex object graph to plain nested dictionaries for JSON export requires just one line with `dataclasses.asdict`:
+
+```python
+from dataclasses import asdict, dataclass
+import json
+
+
+@dataclass
+class FindingSummary:
+    rule_id: str
+    count: int
+
+
+@dataclass
+class RepoSummary:
+    name: str
+    findings: list[FindingSummary]
+
+
+summary = RepoSummary(name="coder", findings=[FindingSummary(rule_id="MG001", count=10)])
+json_str = json.dumps(asdict(summary), indent=2)
+```
+
+#### Concept 4: Resilient AST Attribute Inspection with `isinstance`
+When inspecting polymorphic compiler ASTs like `pglast`, statement attributes can hold different types depending on the SQL command (for example, `DropStmt.objects[0]` holds a tuple for `OBJECT_TABLE`, but a `TypeName` object for `OBJECT_TYPE`). Always checking `isinstance(target, (tuple, list))` before indexing protects against unhandled `TypeError: object is not subscriptable`:
+
+```python
+# Unsafe:
+# first_val = stmt.objects[0][-1]  # Fails if objects[0] is a TypeName
+
+# Safe, robust inspection:
+first_obj = stmt.objects[0]
+if isinstance(first_obj, (tuple, list)) and first_obj and hasattr(first_obj[-1], "sval"):
+    table_name = str(first_obj[-1].sval)
+```
+
+---
+
+### 4. Design Decisions & Interview Questions
+
+#### Q1: Why did 64 migration files in `supabase/auth` fail to parse with `pglast`, and what does this reveal about SQL migration tools?
+**Answer:** Many migration tools (like Go's `migrate` or Supabase's auth engine) use template pre-processors (e.g. Go `text/template` tags like `{{ index .Options "Namespace" }}`) to inject schema or tenant names dynamically before sending the SQL to PostgreSQL. Because Aperture runs static analysis directly on the raw files using PostgreSQL's real parser (`pglast`), template directives like `{{` are rejected as syntax errors (`syntax error at or near "{"`). This demonstrates an essential distinction in database static analysis: migration linters using PostgreSQL's real grammar require either plain SQL or pre-rendered template inputs to inspect the underlying AST.
+
+#### Q2: Why must rollback migrations (`*.down.sql`, `down/` folders) be excluded from forward migration safety audits?
+**Answer:** Rollback migrations intentionally perform destructive operations: they `DROP TABLE`, `DROP COLUMN`, and remove constraints to reverse a deployment. If a migration scanner audited rollback files alongside forward files, it would flag every deliberate cleanup operation as an error (`MG001 DROP TABLE`). Rollbacks are intended for emergency developer reversion, not zero-downtime forward production rollouts. Excluding them prevents massive false-positive pollution.
+
+#### Q3: Why does Aperture pass a shared `SchemaState` across migration files during a benchmark run?
+**Answer:** Migration files in a repository execute sequentially over months or years. If an early migration creates a table (`CREATE TABLE audit_logs (id int);`) and a later migration in the same run adds an index without `CONCURRENTLY` (`CREATE INDEX idx ON audit_logs(id);`), Aperture's `SchemaState` tracks that `audit_logs` was created earlier in the run. Because the table is empty and not yet serving production traffic, Aperture suppresses false-positive warnings (`MG005`). Without tracking schema evolution across files, every initial table build in the repository's history would trigger false-positive warnings.
+
+#### Q4: How is throughput (statements per second) computed, and what architectural factors allow Aperture to exceed 1,300 statements/sec?
+**Answer:** Throughput is computed as $\frac{\text{Total Parsed Statements}}{\text{Total Wall-Clock Time (s)}}$. Aperture achieves $>1,300$ statements/second because:
+1. `pglast` uses compiled C extensions directly wrapping PostgreSQL's native parser (`libpg_query`), parsing SQL into AST nodes in fractions of a millisecond.
+2. Aperture's rule engine evaluates in-memory AST nodes without database network roundtrips.
+3. Node inspection uses fast attribute checks and targeted visitors rather than scanning statement strings or invoking regex engines repeatedly.
+
+#### Q5: What is the benefit of publishing both `benchmark.json` and `benchmark.md`?
+**Answer:** `benchmark.md` is formatted for human engineers and pull request summaries, offering clear Markdown tables, rule breakdowns, and error listings. `benchmark.json` contains the full machine-readable dataset including exact file paths, line numbers, individual rule IDs, severity levels, and execution durations. This allows automated CI scripts, dashboard generators, and academic researchers to ingest, verify, and reproduce the benchmark results without scraping Markdown.
+
+
 
