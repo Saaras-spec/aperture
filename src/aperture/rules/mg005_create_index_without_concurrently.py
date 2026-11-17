@@ -6,7 +6,7 @@ from typing import Any, ClassVar
 
 from aperture.models import Finding, ParsedStatement, Severity, StatementContext
 from aperture.rules.base import Rule
-from aperture.rules.helpers import get_table_name, is_table_created_in_same_file
+from aperture.rules.helpers import get_table_name, is_table_created_in_run
 
 
 class CreateIndexWithoutConcurrentlyRule(Rule):
@@ -32,7 +32,7 @@ class CreateIndexWithoutConcurrentlyRule(Rule):
         stmt: Any = statement.stmt
         table_name = get_table_name(stmt)
 
-        if is_table_created_in_same_file(table_name, context):
+        if is_table_created_in_run(table_name, context):
             return []
 
         findings: list[Finding] = []

@@ -48,6 +48,20 @@ def is_table_created_in_same_file(table_name: str | None, context: StatementCont
     return False
 
 
+def is_table_created_in_run(table_name: str | None, context: StatementContext) -> bool:
+    """Check if table was created in the current migration run or earlier in the same file.
+
+    Operations on tables created in the same migration run are safe because the relation
+    is newly created, empty, and not yet receiving production queries.
+    """
+    if not table_name:
+        return False
+    target = table_name.lower()
+    if context.schema and context.schema.is_table_created_in_run(target):
+        return True
+    return is_table_created_in_same_file(table_name, context)
+
+
 def has_preceding_lock_timeout(context: StatementContext) -> bool:
     """Check if any preceding statement in the file configured lock_timeout."""
     for prev_stmt in context.all_statements[: context.statement_index]:

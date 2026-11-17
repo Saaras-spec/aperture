@@ -8,7 +8,7 @@ from pglast import enums
 
 from aperture.models import Finding, ParsedStatement, Severity, StatementContext
 from aperture.rules.base import Rule
-from aperture.rules.helpers import get_table_name, is_table_created_in_same_file
+from aperture.rules.helpers import get_table_name, is_table_created_in_run
 
 
 class SetNotNullOnExistingColumnRule(Rule):
@@ -26,6 +26,10 @@ class SetNotNullOnExistingColumnRule(Rule):
         # - ALTER TABLE ... ALTER COLUMN ... SET NOT NULL acquires an ACCESS EXCLUSIVE lock.
         # - Postgres performs a sequential scan of the whole table to check for NULLs, blocking
         #   all concurrent reads and writes during the scan.
+        # - In PostgreSQL 12+, SET NOT NULL avoids a table scan if a valid CHECK constraint
+        #   guarantees no null values are present.
+        #   Ref: https://www.postgresql.org/docs/12/release-12.html
+        #   Ref: https://www.postgresql.org/docs/12/sql-altertable.html
         # Safe alternative:
         #   1. Add a CHECK constraint with NOT VALID:
         #      ALTER TABLE t ADD CONSTRAINT chk_not_null CHECK (col IS NOT NULL) NOT VALID;
@@ -36,7 +40,7 @@ class SetNotNullOnExistingColumnRule(Rule):
         stmt: Any = statement.stmt
         table_name = get_table_name(stmt)
 
-        if is_table_created_in_same_file(table_name, context):
+        if is_table_created_in_run(table_name, context):
             return []
 
         findings: list[Finding] = []
@@ -47,6 +51,17 @@ class SetNotNullOnExistingColumnRule(Rule):
                 subtype = getattr(cmd, "subtype", None)
                 if subtype == enums.AlterTableType.AT_SetNotNull:
                     col_name = getattr(cmd, "name", "")
+
+                    # PostgreSQL 12+ optimization: check if valid CHECK constraint exists
+                    if (
+                        context.target_postgres_version >= 12
+                        and context.schema
+                        and table_name
+                        and context.schema.has_check_not_null(table_name, col_name)
+                    ):
+                        # Verified CHECK constraint bypasses full table scan in PG 12+
+                        continue
+
                     col_desc = f"column '{col_name}'" if col_name else "column"
                     tbl = table_name or "table"
                     findings.append(
