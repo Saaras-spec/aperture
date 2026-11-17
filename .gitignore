@@ -37,3 +37,7 @@ build/
 .env
 .env.*
 *.local
+
+# Benchmark cloned repos
+benchmarks/
+
