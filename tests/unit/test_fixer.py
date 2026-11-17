@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from aperture.cli import app
@@ -17,6 +18,92 @@ runner = CliRunner()
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures"
 BAD_DIR = FIXTURES_DIR / "bad"
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "rule_id"),
+    [
+        ("mg005_create_index_not_concurrent.sql", "MG005"),
+        ("mg006_add_fk_without_not_valid.sql", "MG006"),
+        ("mg007_add_check_without_not_valid.sql", "MG007"),
+        ("mg010_alter_table_no_lock_timeout.sql", "MG010"),
+    ],
+)
+def test_fix_every_fixable_bad_fixture_parametrized(
+    fixture_name: str,
+    rule_id: str,
+    tmp_path: Path,
+) -> None:
+    """Every fixable bad fixture must have zero findings for its rule after fix --write.
+
+    Also tests that fix without --write never modifies the file on disk.
+    """
+    src = BAD_DIR / fixture_name
+    dst = tmp_path / fixture_name
+    shutil.copy(src, dst)
+
+    # 1. Assert initial state triggers the target rule
+    initial_findings = check_file(dst, Config())
+    assert any(f.rule_id == rule_id for f in initial_findings), (
+        f"Fixture {fixture_name} did not initially trigger {rule_id}"
+    )
+
+    # 2. Assert fix without --write NEVER modifies the file on disk
+    orig_content = dst.read_text(encoding="utf-8")
+    dry_res = fix_file(dst, write=False)
+    assert dry_res.modified is True
+    assert dry_res.written is False
+    assert dst.read_text(encoding="utf-8") == orig_content
+
+    # 3. Apply fix with write=True
+    write_res = fix_file(dst, write=True)
+    assert write_res.modified is True
+    assert write_res.written is True
+    assert dst.read_text(encoding="utf-8") != orig_content
+
+    # 4. Assert check on fixed file produces zero findings for the fixed rule
+    post_findings = check_file(dst, Config())
+    remaining_for_rule = [f for f in post_findings if f.rule_id == rule_id]
+    assert len(remaining_for_rule) == 0, (
+        f"Expected 0 findings for {rule_id} after fix, got: {remaining_for_rule}"
+    )
+
+
+def test_fix_mg006_mg007_transaction_block_omits_validate_with_note() -> None:
+    """Inside BEGIN...COMMIT, NOT VALID is added and VALIDATE is omitted with a note."""
+    sql = (
+        "BEGIN;\n"
+        "ALTER TABLE orders ADD CONSTRAINT fk_user FOREIGN KEY (user_id) REFERENCES users(id);\n"
+        "ALTER TABLE users ADD CONSTRAINT chk_age CHECK (age >= 0);\n"
+        "COMMIT;\n"
+    )
+    res = fix_sql_string(sql)
+
+    assert res.modified is True
+    assert "FOREIGN KEY (user_id) REFERENCES users (id) NOT VALID;" in res.rewritten
+    assert "CHECK (age >= 0) NOT VALID;" in res.rewritten
+    # VALIDATE CONSTRAINT must NOT be appended inside the transaction block
+    assert "VALIDATE CONSTRAINT" not in res.rewritten
+    # A clear explanation note is provided
+    assert any("VALIDATE CONSTRAINT omitted" in s for s in res.skipped_explanations)
+    assert any("separate migration" in s for s in res.skipped_explanations)
+
+
+def test_fix_mg006_mg007_outside_transaction_block_appends_validate() -> None:
+    """When outside a transaction block, VALIDATE CONSTRAINT is appended in the same file."""
+    sql = (
+        "ALTER TABLE orders ADD CONSTRAINT fk_user FOREIGN KEY (user_id) REFERENCES users(id);\n"
+        "ALTER TABLE users ADD CONSTRAINT chk_age CHECK (age >= 0);\n"
+    )
+    res = fix_sql_string(sql)
+
+    assert res.modified is True
+    assert "FOREIGN KEY (user_id) REFERENCES users (id) NOT VALID;" in res.rewritten
+    assert "ALTER TABLE orders VALIDATE CONSTRAINT fk_user;" in res.rewritten
+    assert "CHECK (age >= 0) NOT VALID;" in res.rewritten
+    assert "ALTER TABLE users VALIDATE CONSTRAINT chk_age;" in res.rewritten
+    # No omitted note when outside transaction
+    assert not any("VALIDATE CONSTRAINT omitted" in s for s in res.skipped_explanations)
 
 
 def test_fix_mg005_creates_index_concurrently() -> None:

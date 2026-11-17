@@ -96,8 +96,26 @@ def _rewrite_mg006_mg007(
     file_path: str,
     line: int,
     skipped: list[str],
+    in_transaction: bool = False,
 ) -> str | None:
-    """Rewrite ADD FOREIGN KEY / CHECK constraint to NOT VALID and append VALIDATE CONSTRAINT."""
+    """Rewrite ADD FOREIGN KEY / CHECK constraint to NOT VALID and append VALIDATE CONSTRAINT.
+
+    PostgreSQL documentation on locking behavior:
+    - https://www.postgresql.org/docs/current/sql-altertable.html
+      (Sections: 'ADD table_constraint [ NOT VALID ]' and 'VALIDATE CONSTRAINT constraint_name')
+    - https://www.postgresql.org/docs/current/explicit-locking.html
+      (Section 13.3 'Explicit Locking')
+
+    In PostgreSQL, ADD CONSTRAINT ... NOT VALID acquires a SHARE ROW EXCLUSIVE lock
+    (for foreign keys) or ACCESS EXCLUSIVE lock (for check constraints) without scanning
+    existing table rows. However, all locks acquired during a transaction are held until
+    the transaction commits or aborts. If VALIDATE CONSTRAINT is executed in the same
+    transaction block (BEGIN...COMMIT), the strong lock acquired by ADD CONSTRAINT is held
+    throughout the entire table scan, eliminating the zero-downtime benefit. Therefore,
+    when statements are wrapped in a transaction block, Aperture rewrites the constraint
+    to NOT VALID and omits VALIDATE CONSTRAINT, prompting the user to run validation in
+    a separate subsequent migration.
+    """
     if type(stmt_node).__name__ != "AlterTableStmt":
         return None
 
@@ -124,6 +142,15 @@ def _rewrite_mg006_mg007(
                     tbl = str(stream.RawStream()(stmt_node.relation))
                 tbl_str = tbl or "table"
                 rewritten_stmt = str(stream.RawStream()(stmt_node))
+
+                if in_transaction:
+                    skipped.append(
+                        f"{file_path}:{line}: Added NOT VALID constraint inside a transaction "
+                        "block. VALIDATE CONSTRAINT omitted: run VALIDATE CONSTRAINT in a "
+                        "separate migration to avoid holding exclusive locks during validation."
+                    )
+                    return f"{rewritten_stmt};"
+
                 validate_stmt = f"ALTER TABLE {tbl_str} VALIDATE CONSTRAINT {conname};"
                 return f"{rewritten_stmt};\n{validate_stmt}"
     return None
@@ -211,6 +238,7 @@ def fix_sql_string(
                 file_path,
                 ps.start_line,
                 skipped_explanations,
+                in_transaction=in_txn_map[idx],
             )
             if rep:
                 replacements[idx] = rep
