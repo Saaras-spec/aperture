@@ -43,6 +43,8 @@ def check_statements(
     for idx, statement in enumerate(statements):
         supp_result = parse_suppressions(statement, file_path=file_path)
         # Any suppression errors (MG000) are included as findings
+        for sf in supp_result.findings:
+            sf.statement_index = idx
         findings.extend(supp_result.findings)
 
         context = StatementContext(
@@ -65,6 +67,7 @@ def check_statements(
                     f.suppressed = True
                     f.suppression_reason = supp_result.suppressions[f.rule_id]
 
+                f.statement_index = idx
                 findings.append(f)
 
         # Mutate schema state after evaluating rules on the statement

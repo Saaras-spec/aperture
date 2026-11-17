@@ -463,6 +463,89 @@ def baseline(
     raise typer.Exit(code=0)
 
 
+@app.command()
+def fix(
+    paths: Annotated[
+        list[Path] | None,
+        typer.Argument(
+            help="Migration files or directories to fix.",
+        ),
+    ] = None,
+    write: Annotated[
+        bool,
+        typer.Option(
+            "--write",
+            "-w",
+            help="Apply safe rewrites directly to files on disk.",
+        ),
+    ] = False,
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            "-c",
+            help="Path to aperture.yml configuration file.",
+        ),
+    ] = None,
+) -> None:
+    """Automatically rewrite risky migration statements using safe zero-downtime patterns."""
+    # 1. Load config
+    try:
+        cfg = load_config(config)
+    except ConfigError as err:
+        typer.secho(f"Configuration error:\n{err}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from None
+
+    # 2. Discover files
+    try:
+        discovered = discover_files(paths=paths, config=cfg)
+    except DiscoveryError as err:
+        typer.secho(f"File discovery error:\n{err}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from None
+
+    if not discovered:
+        typer.echo("No migration files found to fix.")
+        raise typer.Exit(code=0)
+
+    # 3. Run fixer
+    from aperture.fixer import fix_files
+
+    try:
+        results = fix_files(discovered, write=write, config=cfg)
+    except Exception as err:
+        typer.secho(f"Error during auto-fix:\n{err}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from None
+
+    # 4. Report skipped explanations and diffs
+    has_diffs = False
+    modified_count = 0
+
+    for res in results:
+        for expl in res.skipped_explanations:
+            typer.secho(f"aperture: {expl}", fg=typer.colors.YELLOW, err=True)
+
+        if res.modified:
+            modified_count += 1
+            if not write:
+                has_diffs = True
+                typer.echo(res.diff, nl=False)
+            else:
+                typer.echo(f"Fixed {res.file}")
+
+    if not write:
+        if has_diffs:
+            typer.echo(f"\n{modified_count} file(s) would be modified. Run with --write to apply.")
+        else:
+            typer.echo("No fixable issues found.")
+    else:
+        if modified_count > 0:
+            typer.echo(f"\nSuccessfully fixed {modified_count} file(s).")
+        else:
+            typer.echo("No fixable issues found.")
+
+    raise typer.Exit(code=0)
+
+
 def main() -> None:
     """CLI entry point callable directly."""
     app()

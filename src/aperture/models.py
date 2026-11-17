@@ -62,6 +62,7 @@ class Finding:
     suppression_reason: str | None = None
     explanation: str | None = None
     baselined: bool = False
+    statement_index: int | None = None
 
 
 @dataclass
