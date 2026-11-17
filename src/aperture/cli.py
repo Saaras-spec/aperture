@@ -546,6 +546,107 @@ def fix(
     raise typer.Exit(code=0)
 
 
+@app.command()
+def verify(
+    paths: Annotated[
+        list[Path] | None,
+        typer.Argument(
+            help="Migration files or directories to dynamically verify.",
+        ),
+    ] = None,
+    dsn: Annotated[
+        str,
+        typer.Option(
+            "--dsn",
+            help="PostgreSQL connection string (e.g. postgresql://user:pass@localhost:5432/test_db).",
+        ),
+    ] = "",
+    i_understand_this_runs_the_migration: Annotated[
+        bool,
+        typer.Option(
+            "--i-understand-this-runs-the-migration",
+            help="Acknowledge that dynamic verification executes migrations on the target DB.",
+        ),
+    ] = False,
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            "-c",
+            help="Path to aperture.yml configuration file.",
+        ),
+    ] = None,
+) -> None:
+    """Dynamically verify migrations against a live throwaway PostgreSQL database.
+
+    Executes statements within a transaction, monitors relation locks and table rewrites,
+    compares against static analysis predictions, and rolls back the transaction.
+    """
+    if not i_understand_this_runs_the_migration:
+        typer.secho(
+            "Safety error: 'aperture verify' executes migration SQL against a live database.\n"
+            "You must pass '--i-understand-this-runs-the-migration' to confirm you are running "
+            "against a dedicated throwaway test database.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if not dsn.strip():
+        typer.secho(
+            "Missing required option: '--dsn <postgres-dsn>'",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    from aperture.verifier import (
+        format_verification_report,
+        get_database_name,
+        mask_dsn,
+        verify_files,
+    )
+
+    # 1. Load config
+    try:
+        cfg = load_config(config)
+    except ConfigError as err:
+        typer.secho(f"Configuration error:\n{err}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from None
+
+    # 2. Discover files
+    try:
+        discovered = discover_files(paths=paths, config=cfg)
+    except DiscoveryError as err:
+        typer.secho(f"File discovery error:\n{err}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from None
+
+    if not discovered:
+        typer.echo("No migration files found to verify.")
+        raise typer.Exit(code=0)
+
+    # 3. Print database info safely
+    db_name = get_database_name(dsn)
+    masked = mask_dsn(dsn)
+    typer.echo(f"Connecting to database: '{db_name}' at {masked} ...")
+
+    # 4. Run dynamic verification
+    try:
+        report = verify_files(discovered, dsn=dsn, config=cfg)
+    except Exception as err:
+        sanitized_msg = mask_dsn(str(err))
+        typer.secho(f"Dynamic verification failed:\n{sanitized_msg}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from None
+
+    # 5. Output report
+    report_output = format_verification_report(report)
+    typer.echo(report_output)
+
+    if report.total_mismatches > 0:
+        raise typer.Exit(code=1)
+    raise typer.Exit(code=0)
+
+
 def main() -> None:
     """CLI entry point callable directly."""
     app()

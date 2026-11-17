@@ -70,10 +70,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install .[dev]
 
+      - name: Run aperture verify against live PostgreSQL (prints report to CI log)
+        env:
+          POSTGRES_TEST_URL: postgresql://aperture_user:aperture_password@localhost:5432/aperture_test
+        run: |
+          aperture verify demo/db/migrations/001_safe.sql --dsn "$POSTGRES_TEST_URL" --i-understand-this-runs-the-migration
+
       - name: Run integration tests
         env:
           POSTGRES_TEST_URL: postgresql://aperture_user:aperture_password@localhost:5432/aperture_test
-        run: pytest -m integration tests/integration
+        run: pytest -m integration -v tests/integration
 
   docker:
     name: Docker Build & Verification
