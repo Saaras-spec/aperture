@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from aperture.schema import SchemaState
 
 
 class Severity(StrEnum):
@@ -90,3 +93,5 @@ class StatementContext:
     statement_index: int = 0
     all_statements: list[ParsedStatement] = field(default_factory=list)
     large_tables: set[str] = field(default_factory=set)
+    schema: SchemaState | None = None
+    target_postgres_version: int = 14

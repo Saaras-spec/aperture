@@ -45,6 +45,7 @@ class Config(BaseModel):
     """Top-level configuration for Aperture."""
 
     fail_on: Severity = Severity.ERROR
+    target_postgres_version: int = Field(default=14, ge=9, le=18)
     migration_paths: list[str] = Field(
         default_factory=lambda: ["migrations/**/*.sql", "migrations/*.sql"]
     )

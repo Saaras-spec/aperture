@@ -9,6 +9,7 @@ from aperture.config import Config
 from aperture.models import Finding, ParsedStatement, Severity, StatementContext
 from aperture.parser import parse_sql_file, parse_sql_string
 from aperture.rules import get_all_rules
+from aperture.schema import SchemaState
 from aperture.suppression import parse_suppressions
 
 
@@ -16,6 +17,7 @@ def check_statements(
     statements: list[ParsedStatement],
     config: Config,
     file_path: str = "<string>",
+    schema: SchemaState | None = None,
 ) -> list[Finding]:
     """Execute enabled rules across parsed statements and apply overrides and suppression.
 
@@ -23,11 +25,15 @@ def check_statements(
         statements: Parsed statements to check.
         config: Aperture configuration.
         file_path: Path of the migration file.
+        schema: Optional tracked schema state across migration run.
 
     Returns:
         List of findings, including suppressed ones (marked suppressed=True)
         and any MG000 suppression format warnings.
     """
+    if schema is None:
+        schema = SchemaState()
+
     all_rules = get_all_rules()
     active_rules = [r for r in all_rules if config.is_rule_enabled(r.id)]
     large_tables = {table.lower() for table in config.large_tables}
@@ -44,6 +50,8 @@ def check_statements(
             statement_index=idx,
             all_statements=statements,
             large_tables=large_tables,
+            schema=schema,
+            target_postgres_version=config.target_postgres_version,
         )
 
         for rule in active_rules:
@@ -59,6 +67,9 @@ def check_statements(
 
                 findings.append(f)
 
+        # Mutate schema state after evaluating rules on the statement
+        schema.apply_statement(statement)
+
     return findings
 
 
@@ -66,24 +77,31 @@ def check_sql_string(
     sql: str,
     config: Config,
     file_path: str = "<string>",
+    schema: SchemaState | None = None,
 ) -> list[Finding]:
     """Parse and check raw SQL text against enabled rules."""
     statements = parse_sql_string(sql, file_path=file_path)
-    return check_statements(statements, config=config, file_path=file_path)
+    return check_statements(statements, config=config, file_path=file_path, schema=schema)
 
 
-def check_file(file_path: str | Path, config: Config) -> list[Finding]:
+def check_file(
+    file_path: str | Path,
+    config: Config,
+    schema: SchemaState | None = None,
+) -> list[Finding]:
     """Parse and check a single SQL migration file on disk."""
     path = Path(file_path)
     statements = parse_sql_file(path)
-    return check_statements(statements, config=config, file_path=str(path))
+    return check_statements(statements, config=config, file_path=str(path), schema=schema)
 
 
 def check_files(file_paths: Sequence[str | Path], config: Config) -> list[Finding]:
-    """Check multiple migration files and aggregate findings."""
+    """Check multiple migration files in temporal order and aggregate findings."""
+    sorted_paths = sorted(file_paths, key=lambda p: Path(p).name)
+    schema = SchemaState()
     all_findings: list[Finding] = []
-    for file_path in file_paths:
-        file_findings = check_file(file_path, config)
+    for file_path in sorted_paths:
+        file_findings = check_file(file_path, config, schema=schema)
         all_findings.extend(file_findings)
 
     # Sort findings deterministically by file, line, and rule_id
