@@ -270,8 +270,8 @@ rules:
 
 - [ ] **Schema-Aware Analysis with PostgreSQL Version Awareness** *(Planned)*: Track table and column state evolution across historical migrations and customize locking analysis based on target PostgreSQL version behavior.
 - [ ] **Baseline Mode and Auto-Fix** *(Planned)*: Snapshot legacy migration directories to baseline existing violations, with automated remediation (`aperture fix`) to generate non-blocking migration code.
-- [ ] **Dynamic Verification (`aperture verify`)** *(Planned)*: Spin up ephemeral PostgreSQL containers to execute migrations against synthetic workloads, actively measuring transaction lock acquisition times.
-- [ ] **Real-World Benchmark** *(Planned)*: Continuous evaluation against open-source migration suites (GitLab, Mastodon, Discourse) to track detection accuracy and eliminate false positives.
+- [ ] **Dynamic Verification (`aperture verify`)** *(Planned)*: Apply migrations on a throwaway PostgreSQL database and record the locks each statement acquires and whether tables are rewritten, to check the static rules against real behaviour.
+- [ ] **Real-World Benchmark** *(Planned)*: Run Aperture on open-source projects that use plain SQL migration files and report findings, false-positive rate and speed.
 
 ---
 
