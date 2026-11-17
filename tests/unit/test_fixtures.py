@@ -13,6 +13,7 @@ import pytest
 from aperture.models import StatementContext
 from aperture.parser import parse_sql_string
 from aperture.rules import get_all_rules
+from aperture.schema import SchemaState
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures"
 BAD_DIR = FIXTURES_DIR / "bad"
@@ -39,17 +40,20 @@ def _run_all_rules(sql: str, file_path: str) -> list[tuple[str, str]]:
     statements = parse_sql_string(sql, file_path=file_path)
     rules = get_all_rules()
     results: list[tuple[str, str]] = []
+    schema = SchemaState()
 
     for idx, stmt in enumerate(statements):
         context = StatementContext(
             file_path=file_path,
             statement_index=idx,
             all_statements=statements,
+            schema=schema,
         )
         for rule in rules:
             findings = rule.check(stmt, context)
             for f in findings:
                 results.append((f.rule_id, f.message))
+        schema.apply_statement(stmt)
 
     return results
 
