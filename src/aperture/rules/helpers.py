@@ -15,9 +15,14 @@ def get_table_name(stmt: Any) -> str | None:
         return str(stmt.relation.relname)
 
     # DropStmt contains objects tuple: ((<String sval='users'>,),)
-    if type(stmt).__name__ == "DropStmt" and hasattr(stmt, "objects") and stmt.objects:
+    if (
+        type(stmt).__name__ == "DropStmt"
+        and getattr(stmt, "removeType", None) == enums.ObjectType.OBJECT_TABLE
+        and hasattr(stmt, "objects")
+        and stmt.objects
+    ):
         first_obj = stmt.objects[0]
-        if first_obj and hasattr(first_obj[-1], "sval"):
+        if isinstance(first_obj, (tuple, list)) and first_obj and hasattr(first_obj[-1], "sval"):
             return str(first_obj[-1].sval)
 
     return None

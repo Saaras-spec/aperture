@@ -421,7 +421,7 @@ class SchemaState:
 
         if remove_type == enums.ObjectType.OBJECT_TABLE:
             for obj in objects:
-                if obj and hasattr(obj[-1], "sval"):
+                if isinstance(obj, (tuple, list)) and obj and hasattr(obj[-1], "sval"):
                     tbl = str(obj[-1].sval).lower()
                     if tbl in self.tables:
                         del self.tables[tbl]
@@ -431,7 +431,7 @@ class SchemaState:
 
         elif remove_type == enums.ObjectType.OBJECT_INDEX:
             for obj in objects:
-                if obj and hasattr(obj[-1], "sval"):
+                if isinstance(obj, (tuple, list)) and obj and hasattr(obj[-1], "sval"):
                     idx = str(obj[-1].sval).lower()
                     if idx in self.indexes:
                         tbl = self.indexes[idx].table_name

@@ -84,12 +84,15 @@ def is_rollback_or_down_migration(path: Path) -> bool:
     """Check if file is a rollback/down migration that should be excluded.
 
     Matches patterns:
-    - *.down.sql (case-insensitive)
+    - down.sql, *.down.sql, rollback.sql, *.rollback.sql (case-insensitive)
     - in down/ or rollback/ directories
     - filenames starting with down_ or rollback_
     """
     name_lower = path.name.lower()
-    if name_lower.endswith(".down.sql"):
+    if name_lower in ("down.sql", "rollback.sql"):
+        return True
+
+    if name_lower.endswith((".down.sql", ".rollback.sql")):
         return True
 
     if name_lower.startswith(("down_", "rollback_", "down.", "rollback.")):
@@ -97,6 +100,23 @@ def is_rollback_or_down_migration(path: Path) -> bool:
 
     parts_lower = [p.lower() for p in path.parts]
     return any(p in {"down", "rollback", "rollbacks", "downs"} for p in parts_lower)
+
+
+def get_repo_name(repo_path: Path) -> str:
+    """Derive repository name from directory path."""
+    if repo_path.name.lower() in ("migrations", "postgres", "sql", "db"):
+        for part in reversed(repo_path.parts[:-1]):
+            if part.lower() not in (
+                "database",
+                "coderd",
+                "channels",
+                "server",
+                "db",
+                "migrations",
+                "benchmarks",
+            ):
+                return part
+    return repo_path.name
 
 
 def discover_migration_files(repo_path: Path) -> list[Path]:
@@ -157,7 +177,7 @@ def benchmark_repo(
     if config is None:
         config = Config()
 
-    repo_name = repo_path.name
+    repo_name = get_repo_name(repo_path)
     files = discover_migration_files(repo_path)
     result = RepoBenchmarkResult(
         repo_name=repo_name,
@@ -365,7 +385,8 @@ def run_benchmark(
         if not path.exists():
             print(f"Warning: Repository path '{path}' does not exist, skipping.", file=sys.stderr)
             continue
-        print(f"Benchmarking repository: {path.name} ({path}) ...")
+        repo_name = get_repo_name(path)
+        print(f"Benchmarking repository: {repo_name} ({path}) ...")
         res = benchmark_repo(path, config=config)
         print(
             f"  -> {res.files_scanned} files, {res.statements_parsed} statements, "

@@ -126,7 +126,7 @@ class _TableFinder(visitors.Visitor):
     def visit_DropStmt(self, _ancestors: Any, node: Any) -> None:  # noqa: N802
         if getattr(node, "removeType", None) == enums.ObjectType.OBJECT_TABLE:
             for obj in getattr(node, "objects", ()) or ():
-                if obj and hasattr(obj[-1], "sval"):
+                if isinstance(obj, (tuple, list)) and obj and hasattr(obj[-1], "sval"):
                     self.tables.add(str(obj[-1].sval).lower())
 
 
